@@ -32,6 +32,14 @@ import { logger } from '../core/logger'
  *  - Die Aufbewahrung schützt immer mindestens das letzte gültige Backup.
  */
 
+/**
+ * Dateien und Verzeichnisse, die nicht in ein Backup gehoeren.
+ * `session.lock` wird vom laufenden Minecraft-Server exklusiv gehalten
+ * (unter Windows gesperrt) und von Minecraft ohnehin neu erzeugt.
+ */
+const EXCLUDED_FILES = new Set(['session.lock'])
+const EXCLUDED_DIRS = new Set(['cache', '.cache', 'tmp'])
+
 export interface BackupManagerOptions {
   /** Verzeichnis, in dem die Backups liegen. */
   backupsDir: string
@@ -99,10 +107,16 @@ export class BackupManager {
           cwd: ctx.worldPath,
           file: archive,
           portable: true,
-          // Keine Symlinks im Archiv erlauben (Manipulationsschutz)
+          // Keine Symlinks im Archiv erlauben (Manipulationsschutz) und
+          // dieselben Dateien ausschliessen wie beim Manifest. session.lock
+          // wird vom laufenden Server exklusiv gehalten (Windows sperrt die
+          // Datei) und wird von Minecraft ohnehin neu erzeugt.
           filter: (path: string) => {
             const normalized = path.replace(/\\/g, '/').replace(/^\.\//, '')
             if (normalized === '' || normalized === '.') return true
+            const first = normalized.split('/')[0] ?? ''
+            if (EXCLUDED_FILES.has(first)) return false
+            if (EXCLUDED_DIRS.has(first)) return false
             try {
               normalizeRelative(normalized)
               return true

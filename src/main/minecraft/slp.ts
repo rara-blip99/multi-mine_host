@@ -86,20 +86,25 @@ export function probeServerStatus(
 
     socket.on('connect', () => {
       try {
-        const hostAndPort = writeVarInt(0) // ProtocolVersion (beliebig)
+        // Handshake-Paket:
+        //   VarInt packetLength | VarInt packetId(0x00) | VarInt protocolVersion
+        //   | String address | unsigned short port | VarInt nextState(1 = Status)
+        const protocolVersion = 765
         const handshake = Buffer.concat([
-          hostAndPort,
+          writeVarInt(0),
+          writeVarInt(protocolVersion),
           writeString(host),
           (() => {
             const b = Buffer.alloc(2)
             b.writeUInt16BE(port)
             return b
           })(),
-          writeVarInt(1) // NextState: Status
+          writeVarInt(1)
         ])
         const handshakePacket = Buffer.concat([writeVarInt(handshake.length), handshake])
 
-        const statusPacket = Buffer.concat([writeVarInt(1), writeVarInt(0)]) // length=1, packetId=0
+        // Status-Request: VarInt packetLength(1) | VarInt packetId(0x00)
+        const statusPacket = Buffer.concat([writeVarInt(1), writeVarInt(0)])
 
         socket.write(handshakePacket)
         socket.write(statusPacket)

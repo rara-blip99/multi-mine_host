@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { checkCompatibility, dataVersionFor, mcVersionForDataVersion } from '../src/main/minecraft/versions'
 import { parseNbt, nbtGet } from '../src/main/minecraft/nbt'
 import { gunzipSync, gzipSync } from 'node:zlib'
@@ -74,6 +76,17 @@ function buildLevelDat(dataVersion: number, levelName = 'Testwelt'): Buffer {
 }
 
 describe('NBT-Leser', () => {
+  it('liest die DataVersion aus einer echten Minecraft-Welt', () => {
+    // Fixture: von einem echten Paper-1.20.4-Server erzeugte Welt
+    const fixture = join(import.meta.dirname, 'fixtures', 'mc-world', 'level.dat')
+    const raw = readFileSync(fixture)
+    const nbtBuf = raw.length > 2 && raw[0] === 0x1f && raw[1] === 0x8b ? gunzipSync(raw) : raw
+    const tree = parseNbt(nbtBuf)
+    expect(nbtGet(tree, ['Data', 'DataVersion'])).toBe(3700)
+    expect(nbtGet(tree, ['Data', 'LevelName'])).toBe('world')
+    expect(Object.keys(tree)).toContain('Data')
+  })
+
   it('liest die DataVersion aus level.dat', () => {
     const tree = parseNbt(buildLevelDat(3700, 'Meine Welt'))
     const data = nbtGet(tree, ['Data'])

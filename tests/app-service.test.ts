@@ -1,8 +1,8 @@
 import { describe, expect, it, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, cpSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { gzipSync } from 'node:zlib'
+import { gzipSync, gunzipSync } from 'node:zlib'
 import { AppService } from '../src/main/app-service'
 import { Paths } from '../src/main/core/paths'
 import { IdentityStore } from '../src/main/security/identity'
@@ -23,27 +23,15 @@ function newRoot(): string {
   return dir
 }
 
-/** Erzeugt eine minimal gueltige Minecraft-Welt (level.dat + region). */
-function createWorld(path: string, dataVersion = 3700): void {
-  mkdirSync(join(path, 'region'), { recursive: true })
-  // level.dat als gzip-komprimiertes NBT mit der gewuenschten DataVersion
-  const parts: Buffer[] = []
-  const str = (s: string): Buffer => {
-    const data = Buffer.from(s, 'utf8')
-    const len = Buffer.alloc(2)
-    len.writeUInt16BE(data.length)
-    return Buffer.concat([len, data])
-  }
-  parts.push(Buffer.from([0x0a]), str(''))
-  parts.push(Buffer.from([0x0a]), str('Data'))
-  parts.push(Buffer.from([0x03]), str('DataVersion'))
-  const dv = Buffer.alloc(4)
-  dv.writeInt32BE(dataVersion)
-  parts.push(dv)
-  parts.push(Buffer.from([0x08]), str('LevelName'), str('Testwelt'))
-  parts.push(Buffer.from([0x00]), Buffer.from([0x00]))
-  writeFileSync(join(path, 'level.dat'), gzipSync(Buffer.concat(parts)))
-  writeFileSync(join(path, 'region', 'r.0.0.mca'), 'CHUNK')
+/**
+ * Echte, von einem Minecraft-Server erzeugte Welt als Testfixture.
+ * Sie ist minimal (nur level.dat, uid.dat, datapacks) - der Server erzeugt
+ * die Region-Dateien beim Start selbst.
+ */
+const FIXTURE_WORLD = join(import.meta.dirname, 'fixtures', 'mc-world')
+
+function createWorld(path: string): void {
+  cpSync(FIXTURE_WORLD, path, { recursive: true })
 }
 
 afterEach(() => {
@@ -85,7 +73,7 @@ describe('AppService (Rauchtest)', () => {
       // Die importierte Welt ist jetzt im Weltspeicher
       const worlds = service.listLocalWorlds()
       expect(worlds.length).toBe(1)
-      expect(worlds[0]?.name).toBe('Testwelt')
+      expect(worlds[0]?.name).toBe('world')
 
       // Integritaet ist ok
       const check = service.checkWorld()
@@ -99,14 +87,16 @@ describe('AppService (Rauchtest)', () => {
       expect(backup.info?.verified).toBe(true)
       expect(backup.info?.worldVersionId).toMatch(/^[0-9a-f]{64}$/)
 
-      // Welt verändern
+      // Welt verändern (eine zusätzliche Datei im data-Ordner)
       const worldPath = join(Paths.defaultWorldsDir(), 'meine-welt')
-      writeFileSync(join(worldPath, 'region', 'r.0.0.mca'), 'VERAENDERT')
+      mkdirSync(join(worldPath, 'data'), { recursive: true })
+      writeFileSync(join(worldPath, 'data', 'test.dat'), 'VERAENDERT')
 
       // Wiederherstellung
       const restored = await service.restoreBackup(backup.info!.id)
       expect(restored.ok).toBe(true)
-      expect(readFileSync(join(worldPath, 'region', 'r.0.0.mca'), 'utf8')).toBe('CHUNK')
+      expect(existsSync(join(worldPath, 'data', 'test.dat'))).toBe(false)
+      expect(readFileSync(join(worldPath, 'level.dat')).length).toBeGreaterThan(0)
 
       // Backups sind auflistbar
       const list = await service.listBackups()
@@ -137,8 +127,20 @@ describe('AppService (Rauchtest)', () => {
   it('verhindert den Start einer Welt mit inkompatibler Version', async () => {
     const root = newRoot()
     const source = newRoot()
-    // DataVersion 4189 entspricht Minecraft 1.21.4 - neuer als 1.20.4
-    createWorld(source, 4189)
+    // DataVersion auf eine neuere Minecraft-Version setzen (1.21.4 = 4189)
+    createWorld(source)
+    const levelDat = join(source, 'level.dat')
+    const raw = readFileSync(levelDat)
+    // level.dat ist gzip-komprimiert -> entpacken, patchen, wieder packen.
+    const unpacked = gunzipSync(raw)
+    const marker = Buffer.from('DataVersion', 'utf8')
+    const idx = unpacked.indexOf(marker)
+    expect(idx).toBeGreaterThan(0)
+    // Nach dem Namen folgt unmittelbar der Big-Endian-Wert (4 Byte)
+    const valueOffset = idx + marker.length
+    const patched = Buffer.from(unpacked)
+    patched.writeInt32BE(4189, valueOffset)
+    writeFileSync(levelDat, gzipSync(patched))
 
     const identity = new IdentityStore(join(root, 'identity.json'))
     const service = new AppService({ identity, dataRoot: root })

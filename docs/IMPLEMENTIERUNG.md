@@ -31,7 +31,7 @@ was noch offen ist.
 | Fencing-Reaktion in der Anwendung (Server stoppen, Quarantäne) | 🟡 | – |
 | Automatische Übernahme nach Host-Ausfall | 🟡 | – |
 
-## 2. Gruppenverwaltung
+## 2. Gruppe
 
 | Funktion | Status | Tests |
 |---|---|---|
@@ -62,15 +62,15 @@ was noch offen ist.
 
 | Funktion | Status | Tests |
 |---|---|---|
-| Paper-JAR herunterladen + SHA-256 prüfen | 🟡 | – |
-| Server starten, Status, Log-Ausgabe | 🟡 | – |
-| `save-off` / `save-all flush` / `save-on` | 🟡 | – |
-| Kontrolliertes Herunterfahren mit Welt-Speicherung | 🟡 | – |
-| Spielerzahl per Server-List-Ping | 🟡 | – |
-| `server.properties`, `eula.txt`, `ops.json`, `whitelist.json` | 🟡 | – |
-| DataVersion aus `level.dat` lesen (eigener NBT-Leser) | ✅ | `minecraft-versions.test.ts` |
+| Paper-JAR herunterladen + SHA-256 prüfen | ✅ | `scripts/smoke-minecraft.ts` (manueller Test) |
+| Server starten, Status, Log-Ausgabe | ✅ | `scripts/smoke-minecraft.ts` (manueller Test) |
+| `save-off` / `save-all flush` / `save-on` | ✅ | im Rauchtest geprüft |
+| Kontrolliertes Herunterfahren mit Welt-Speicherung | ✅ | im Rauchtest geprüft (Exit-Code 0) |
+| Spielerzahl per Server-List-Ping | ✅ | im Rauchtest geprüft (0/20) |
+| `server.properties`, `eula.txt`, `ops.json`, `whitelist.json` | ✅ | im Rauchtest geprüft |
+| DataVersion aus `level.dat` lesen (eigener NBT-Leser) | ✅ | `minecraft-versions.test.ts` (echte Welt-Fixture) |
 | Kompatibilitätsprüfung (Downgrade verhindern) | ✅ | `minecraft-versions.test.ts`, `app-service.test.ts` |
-| Import einer bestehenden Welt | ✅ | `app-service.test.ts` |
+| Import einer bestehenden Welt | ✅ | `app-service.test.ts` (echte Welt-Fixture) |
 | Guided Import mit Kompatibilitätshinweis | 🟡 | – |
 | Bedrock Edition | ⬜ | – |
 | Plugin-Verwaltung | ⬜ | – |
@@ -95,8 +95,8 @@ was noch offen ist.
 
 | Funktion | Status | Tests |
 |---|---|---|
-| Automatische Backups im konfigurierbaren Intervall (Standard 5 min) | 🟡 | – |
-| Welt vor dem Backup kontrolliert speichern | 🟡 | – |
+| Automatische Backups im konfigurierbaren Intervall (Standard 5 min) | ✅ | im Rauchtest geprüft |
+| Welt vor dem Backup kontrolliert speichern | ✅ | im Rauchtest geprüft |
 | Komprimiertes Archiv (`tar.gz`) | ✅ | `backup.test.ts` |
 | Prüfsumme und Metadaten je Backup | ✅ | `backup.test.ts` |
 | Erkennung beschädigter Backups | ✅ | `backup.test.ts` |
@@ -139,15 +139,33 @@ was noch offen ist.
 Priorisiert nach Nutzen für das Kernproblem (dynamisches Hosting):
 
 1. **Automatischer Failover im echten Betrieb** – die Zustandsmaschine ist
-   implementiert, muss aber über echte Netzwerkabbrüche verifiziert werden.
+   implementiert und auf Logikebene sowie über echtes libp2p-Netz getestet,
+   muss aber noch über echte Netzausfälle (Kabel ziehen) verifiziert werden.
 2. **Welt-Replikation auf einen zweiten PC** – für echte Ausfallsicherheit
    ohne Datenverlust ist eine Weltkopie auf einem zweiten Mitglied nötig.
-   Die Replikation von *Backups* ist umgesetzt; die Replikation der *Welt*
-   selbst fehlt noch.
+   Die Replikation von *Backups* ist umgesetzt; die der *Welt* fehlt noch.
 3. **Stabile Spieleradresse** – DNS-/VPN-Anleitung und ggf. ein
    UDP-Hole-Punching.
 4. **Automatische Update-Installation** – der Update-Manager lädt geprüfte
    Installer herunter, startet sie aber nicht selbst.
+
+## 9a. Manuell verifiziert (nicht automatisiert)
+
+Der Rauchtest `npm run smoke:minecraft` wurde vollständig ausgeführt und
+erfolgreich durchlaufen:
+
+| Schritt | Ergebnis |
+|---|---|
+| Welt importieren (echte Paper-Welt) | OK |
+| Paper-JAR herunterladen + SHA-256 prüfen | OK (43 MB, Build 499) |
+| Minecraft-Server starten | OK (`Done (5.8s)!`) |
+| Serverstatus | `running`, 4 GB RAM-Limit |
+| Server-List-Ping | `Paper 1.20.4 (Protokoll 765), 0/20 Spieler` |
+| Backup des laufenden Servers | OK (4 KB Archiv) |
+| Server kontrolliert stoppen | OK (Exit-Code 0) |
+| Weltintegrität nach dem Stopp | OK |
+
+Der Test ist reproduzierbar: `npm run smoke:minecraft`.
 
 ## 10. Bekannte Fehler und Lücken
 
