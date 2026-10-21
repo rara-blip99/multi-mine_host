@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, readdirSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, readdirSync, symlinkSync, lstatSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { cp } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
@@ -245,6 +245,7 @@ export class AppService {
       identity: this.identity,
       groupId: this.session.groupId ?? '',
       provideWorld: () => this.provideWorld(),
+      quiesceWorld: (requesterId, epoch) => this.quiesceForHandover(requesterId, epoch),
       publicKeys: () => this.memberPublicKeys(),
       peerIdOf: (nodeId) => this.peerIdOf(nodeId)
     })
@@ -736,6 +737,9 @@ export class AppService {
     const server = this.server
     if (!server) return { ok: false, error: 'Server nicht vorbereitet' }
 
+    // Die Welt muss fuer den Server erreichbar sein (<serverDir>/world).
+    await this.linkWorldToServer()
+
     // Fencing-Pruefung: ohne gueltige Lease wird nicht gestartet.
     if (!force && this.state.group) {
       if (!this.lease?.lease) {
@@ -986,10 +990,16 @@ export class AppService {
       return
     }
 
-    // Kein Host oder Lease noch gueltig -> nichts tun, der Hub entscheidet.
-    if (!lease) return
+    // Es ist ueberhaupt kein Host bestimmt. Dann uebernimmt ein Mitglied,
+    // sofern es hostingfaehig ist und es eine Welt zu hosten gibt.
+    if (!lease) {
+      if (!this.state.settings.hostingAllowed) return
+      if (!this.state.world) return
+      void this.attemptTakeover(null)
+      return
+    }
 
-    // Lease abgelaufen? Dann ist eine Uebernahme moeglich.
+    // Die Lease laeuft noch - der Host ist berechtigt.
     const expired = lease.expiresAt <= Date.now()
     if (!expired) return
 
@@ -1122,11 +1132,84 @@ export class AppService {
   }
 
   /**
+   * Führt den kontrollierten Herunterfahren aus, wenn ein anderes Mitglied
+   * die Host-Rolle übernommen hat.
+   *
+   * Ablauf: save-off -> save-all flush -> Server stoppen -> Weltversion
+   * ermitteln. Erst danach darf der neue Host die Welt übernehmen.
+   */
+  async quiesceForHandover(
+    requesterNodeId: string,
+    newEpoch: number
+  ): Promise<{ ok: boolean; versionId: string; error?: string }> {
+    const myEpoch = this.lease?.epoch ?? 0
+    if (newEpoch <= myEpoch) {
+      return {
+        ok: false,
+        versionId: '',
+        error: `Die angeforderte Epoche ${newEpoch} ist nicht neuer als die eigene (${myEpoch})`
+      }
+    }
+
+    // Wenn der Hub erreichbar ist, verifizieren wir dort, wer die Lease hält.
+    const hub = this.hub
+    const groupId = this.session.groupId
+    if (hub && groupId) {
+      try {
+        const status = await hub.call<{ kind: 'leaseStatus'; lease: HostLease | null }>(
+          'hub.leaseStatus',
+          { groupId },
+          5_000
+        )
+        if (status.lease && status.lease.holderId !== requesterNodeId) {
+          return {
+            ok: false,
+            versionId: '',
+            error: `Der Hub führt weiterhin ${status.lease.holderId} als Host`
+          }
+        }
+      } catch (err) {
+        // Hub nicht erreichbar -> wir vertrauen der signierten Anfrage.
+        logger.warn('app', 'Hub bei der Übergabe nicht erreichbar - signierte Anfrage wird akzeptiert', {
+          error: String(err)
+        })
+      }
+    }
+
+    logger.info('app', 'Kontrollierte Übergabe an neues Mitglied', {
+      requester: requesterNodeId,
+      newEpoch
+    })
+
+    try {
+      if (this.server) {
+        const status = this.server.status()
+        if (status.state === 'running' || status.state === 'starting') {
+          await this.server.quiesceAndStop(90_000)
+          this.patch({ server: this.server.status() })
+        }
+      }
+      const manifest = await this.currentManifest()
+      this.journal.append('quiesce', { requester: requesterNodeId, newEpoch, versionId: manifest.versionId })
+      logger.info('app', 'Server kontrolliert gestoppt - Welt ist konsistent', {
+        versionId: manifest.versionId
+      })
+      return { ok: true, versionId: manifest.versionId }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.error('app', 'Kontrollierte Übergabe fehlgeschlagen', { error: message })
+      this.journal.append('quiesce-failed', { requester: requesterNodeId, error: message })
+      return { ok: false, versionId: '', error: message }
+    }
+  }
+
+  /**
    * Besorgt die Welt fuer den neuen Host.
    *
    * Reihenfolge:
    *  1. Die Welt liegt bereits lokal vor (gleiche versionId) -> fertig.
-   *  2. Der letzte Host ist erreichbar -> Welt von ihm anfordern.
+   *  2. Der letzte Host ist erreichbar -> kontrolliert herunterfahren und
+   *     die Welt von ihm anfordern.
    *  3. Eine Replik ist erreichbar -> Welt von dort anfordern.
    *  4. Es existiert ein lokales Backup -> daraus wiederherstellen.
    *  5. Sonst: kein sicherer Start moeglich.
@@ -1160,13 +1243,34 @@ export class AppService {
       }
     }
 
-    // 2) Vom letzten Host anfordern
+    // 2) Vom letzten Host anfordern (mit kontrolliertem Herunterfahren)
     const candidates = [world.ownerId, ...world.replicaIds].filter(
       (id) => id && id !== this.identity.nodeId
     )
     for (const providerId of candidates) {
       const peer = this.peers?.peer(providerId)
       if (!peer) continue
+
+      // 2a) Den bisherigen Host bitten, den Server kontrolliert zu stoppen.
+      //     Ohne diese Bestaetigung koennte er noch in die Welt schreiben.
+      this.patch({
+        failover: {
+          ...this.state.failover,
+          phase: 'draining',
+          updatedAt: Date.now(),
+          message: `${peer.displayName} wird aufgefordert, den Server kontrolliert zu stoppen`
+        }
+      })
+      const quiesce = await this.peers?.requestQuiesce(providerId, epoch)
+      if (quiesce && !quiesce.ok) {
+        // Der Host ist vermutlich nicht erreichbar (Absturz) - das ist ok,
+        // dann wird die letzte bekannte Weltversion verwendet.
+        logger.info('app', 'Kontrollierte Übergabe nicht möglich - Host vermutlich ausgefallen', {
+          provider: providerId,
+          reason: quiesce.error
+        })
+      }
+
       this.patch({
         failover: {
           ...this.state.failover,
@@ -1382,7 +1486,12 @@ export class AppService {
   // Hilfsfunktionen
   // -------------------------------------------------------------------------
 
-  /** Weltpfad des Servers: der Server erwartet die Welt unter <serverDir>/world. */
+  /**
+   * Weltpfad des Servers: der Server erwartet die Welt unter <serverDir>/world.
+   *
+   * Die Welt wird nicht kopiert, sondern per Junction (Windows) bzw. Symlink
+   * verknuepft. Die Daten bleiben dadurch an genau einer Stelle.
+   */
   async linkWorldToServer(): Promise<void> {
     const serverDir = this.serverDir()
     const target = join(serverDir, 'world')
@@ -1390,14 +1499,30 @@ export class AppService {
     mkdirSync(serverDir, { recursive: true })
     if (existsSync(target)) {
       if (target === source) return
-      rmSync(target, { recursive: true, force: true })
-    }
-    if (existsSync(source)) {
+      // Bestehende Verknuepfung entfernen, echtes Verzeichnis in die
+      // Quarantäne verschieben (nicht einfach löschen!).
       try {
-        symlinkSync(source, target, 'junction')
+        const st = lstatSync(target)
+        if (st.isSymbolicLink()) {
+          rmSync(target, { force: true })
+        } else {
+          const quarantine = Paths.quarantine()
+          mkdirSync(quarantine, { recursive: true })
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+          renameSync(target, join(quarantine, `server-world-${stamp}`))
+        }
       } catch {
-        await copyDirectory(source, target)
+        rmSync(target, { recursive: true, force: true })
       }
+    }
+    if (!existsSync(source)) return
+    try {
+      symlinkSync(source, target, 'junction')
+      logger.info('app', 'Welt mit dem Serververzeichnis verknüpft', { source, target })
+    } catch (err) {
+      // Ohne Symlink-Berechtigung wird kopiert.
+      logger.warn('app', 'Verknüpfung nicht möglich - Welt wird kopiert', { error: String(err) })
+      await copyDirectory(source, target)
     }
   }
 }

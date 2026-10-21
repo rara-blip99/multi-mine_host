@@ -206,6 +206,27 @@ export type HubResponsePayload =
   | { kind: 'discovery'; peers: PeerDiscoveryInfo[] }
   | { kind: 'ok' }
 
+/** Anfrage an den bisherigen Host: Server kontrolliert herunterfahren. */
+export interface QuiesceFrame {
+  type: 'quiesce'
+  groupId: string
+  /** Epoche des neuen Hosts (muss groesser als die eigene sein). */
+  epoch: number
+  from: string
+  ts: number
+  nonce: string
+  sig: string
+}
+
+/** Antwort des bisherigen Hosts auf eine Quiesce-Anfrage. */
+export interface QuiesceResultFrame {
+  type: 'quiesce-result'
+  ok: boolean
+  /** Weltversion nach dem kontrollierten Stopp. */
+  versionId: string
+  error?: string
+}
+
 export interface PeerDiscoveryInfo {
   nodeId: string
   displayName: string

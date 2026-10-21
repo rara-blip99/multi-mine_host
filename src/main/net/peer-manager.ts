@@ -69,12 +69,37 @@ interface WorldErrorFrame {
   reason: string
 }
 
+interface QuiesceFrame {
+  type: 'quiesce'
+  groupId: string
+  epoch: number
+  from: string
+  ts: number
+  nonce: string
+  sig: string
+}
+
+interface QuiesceResultFrame {
+  type: 'quiesce-result'
+  ok: boolean
+  versionId: string
+  error?: string
+}
+
 export interface PeerManagerOptions {
   node: PeerNode
   identity: IdentityStore
   groupId: string
   /** Liefert die Welt, die angeboten werden soll (oder null). */
   provideWorld: (requesterNodeId: string) => Promise<{ worldPath: string; manifest: WorldManifest } | null>
+  /**
+   * Fuehrt den kontrollierten Herunterfahren des Servers aus.
+   * Liefert die Weltversion nach dem Stopp (oder null bei Fehler).
+   */
+  quiesceWorld: (
+    requesterNodeId: string,
+    epoch: number
+  ) => Promise<{ ok: boolean; versionId: string; error?: string }>
   /** Bekannte Public Keys der Mitglieder (fuer Signaturpruefung). */
   publicKeys: () => Map<string, string>
   /** Aufloesung nodeId -> Peer-ID. */
@@ -94,7 +119,10 @@ export class PeerManager {
       if (!peer.peerId) continue
       try {
         const peerId = await resolvePeerId(peer.peerId)
-        const addrs: string[] = [...peer.addresses]
+        // Der Peer-Store erwartet reine Transportadressen ohne "/p2p/...".
+        const addrs = peer.addresses
+          .map((a) => a.replace(/\/p2p\/[^/]+$/, ''))
+          .filter((a) => a.length > 0)
         if (addrs.length === 0) continue
         await this.opts.node.node.peerStore.save(peerId, {
           multiaddrs: addrs.map((a: string) => multiaddr(a))
@@ -254,6 +282,80 @@ export class PeerManager {
     }
   }
 
+  /**
+   * Fordert den bisherigen Host auf, den Server kontrolliert herunterzufahren.
+   *
+   * Ablauf auf der Gegenseite:
+   *   save-off -> save-all flush -> stop
+   * Danach wird die Weltversion gemeldet, die der neue Host uebernehmen soll.
+   */
+  async requestQuiesce(
+    providerNodeId: string,
+    epoch: number,
+    timeoutMs = 60_000
+  ): Promise<{ ok: boolean; versionId: string; error?: string }> {
+    const peer = this.peers.get(providerNodeId)
+    const peerId = peer?.peerId || this.opts.peerIdOf(providerNodeId)
+    if (!peerId) {
+      return { ok: false, versionId: '', error: `Keine Peer-ID für ${providerNodeId} bekannt` }
+    }
+
+    let stream: Stream
+    try {
+      stream = await this.opts.node.dial(peerId, PROTOCOLS.world, timeoutMs)
+    } catch (err) {
+      return {
+        ok: false,
+        versionId: '',
+        error: `Verbindung zu ${providerNodeId} fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}`
+      }
+    }
+
+    try {
+      const request: QuiesceFrame = {
+        type: 'quiesce',
+        groupId: this.opts.groupId,
+        epoch,
+        from: this.opts.identity.nodeId,
+        ts: Date.now(),
+        nonce: randomId(),
+        sig: ''
+      }
+      request.sig = this.opts.identity.sign(
+        signatureBody({
+          v: '1.0.0',
+          id: request.nonce,
+          type: 'world.quiesce',
+          ts: request.ts,
+          nonce: request.nonce,
+          from: request.from,
+          payload: { groupId: request.groupId, epoch: request.epoch }
+        })
+      )
+      await writeFrame(
+        stream,
+        Buffer.concat([Buffer.from([FRAME_CONTROL]), Buffer.from(JSON.stringify(request), 'utf8')])
+      )
+
+      const iterator = readFrames(stream)
+      const first = await iterator.next()
+      if (first.done || !first.value) throw new Error('Keine Antwort auf die Quiesce-Anfrage')
+      const body = first.value.subarray(1)
+      const result = JSON.parse(new TextDecoder().decode(body)) as QuiesceResultFrame
+      if (result.type !== 'quiesce-result') throw new Error('Unerwartete Antwort')
+      return { ok: result.ok, versionId: result.versionId, error: result.error }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, versionId: '', error: message }
+    } finally {
+      try {
+        await stream.close()
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   /** Behandelt eine eingehende Weltanfrage. */
   private async handleIncoming(stream: Stream): Promise<void> {
     const iterator = readFrames(stream)
@@ -263,7 +365,15 @@ export class PeerManager {
       const type = first.value[0] as number
       if (type !== FRAME_CONTROL) return
       const body = first.value.subarray(1)
-      const request = JSON.parse(new TextDecoder().decode(body)) as WorldRequestFrame
+      const parsed = JSON.parse(new TextDecoder().decode(body)) as
+        | WorldRequestFrame
+        | QuiesceFrame
+
+      if (parsed.type === 'quiesce') {
+        await this.handleQuiesce(stream, parsed)
+        return
+      }
+      const request = parsed as WorldRequestFrame
       if (request.type !== 'request') return
 
       // Signatur pruefen
@@ -356,6 +466,66 @@ export class PeerManager {
         /* ignore */
       }
     }
+  }
+
+  /**
+   * Behandelt eine Quiesce-Anfrage: der Server wird kontrolliert gestoppt
+   * und die Weltversion gemeldet.
+   */
+  private async handleQuiesce(stream: Stream, request: QuiesceFrame): Promise<void> {
+    const respond = (result: QuiesceResultFrame): void => {
+      void writeFrame(
+        stream,
+        Buffer.concat([Buffer.from([FRAME_CONTROL]), Buffer.from(JSON.stringify(result), 'utf8')])
+      ).catch(() => {
+        /* ignore */
+      })
+    }
+
+    // Signatur pruefen
+    const publicKey = this.opts.publicKeys().get(request.from)
+    if (!publicKey) {
+      respond({ type: 'quiesce-result', ok: false, versionId: '', error: 'Unbekannter Absender' })
+      return
+    }
+    const valid = IdentityStore.verifyWith(
+      publicKey,
+      signatureBody({
+        v: '1.0.0',
+        id: request.nonce,
+        type: 'world.quiesce',
+        ts: request.ts,
+        nonce: request.nonce,
+        from: request.from,
+        payload: { groupId: request.groupId, epoch: request.epoch }
+      }),
+      request.sig
+    )
+    if (!valid) {
+      respond({ type: 'quiesce-result', ok: false, versionId: '', error: 'Ungültige Signatur' })
+      return
+    }
+    if (request.groupId !== this.opts.groupId) {
+      respond({
+        type: 'quiesce-result',
+        ok: false,
+        versionId: '',
+        error: 'Anfrage gehört zu einer anderen Gruppe'
+      })
+      return
+    }
+    if (Math.abs(Date.now() - request.ts) > 60_000) {
+      respond({ type: 'quiesce-result', ok: false, versionId: '', error: 'Anfrage ist zu alt' })
+      return
+    }
+
+    const result = await this.opts.quiesceWorld(request.from, request.epoch)
+    respond({
+      type: 'quiesce-result',
+      ok: result.ok,
+      versionId: result.versionId,
+      ...(result.error ? { error: result.error } : {})
+    })
   }
 
   private async sendError(stream: Stream, reason: string): Promise<void> {
