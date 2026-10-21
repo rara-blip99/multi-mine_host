@@ -6,6 +6,7 @@ import { HubNode } from '../src/main/hub/hub-node'
 import { HubClient } from '../src/main/hub/hub-client'
 import { IdentityStore } from '../src/main/security/identity'
 import { createPeerNode } from '../src/main/net/transport'
+import { measureNetworkSpeed } from '../src/main/net/speed-test'
 import type { PeerNode } from '../src/main/net/transport'
 import type { InviteInfo } from '../src/shared/protocol'
 import type {
@@ -249,6 +250,38 @@ describe('Integration: echtes Netzwerk', () => {
     const peerB = discovery.peers.find((p) => p.nodeId === b.identity.nodeId)
     expect(peerB?.peerId).toBe(b.client.peerId)
   }, 90_000)
+
+  it('misst die Netzwerkqualität zum Hub', async () => {
+    const hub3 = new HubNode({
+      listen: ['/ip4/127.0.0.1/tcp/0'],
+      token: null,
+      dataFile: join(mkdtempSync(join(tmpdir(), 'mmh-hub3-')), 'hub.json')
+    })
+    await hub3.start()
+    const address = `${hub3.addresses.find((a) => a.includes('/ip4/127.0.0.1/tcp/'))}/p2p/${hub3.peerId}`
+
+    const dir = mkdtempSync(join(tmpdir(), 'mmh-speed-'))
+    const identity = new IdentityStore(join(dir, 'identity.json'))
+    const node = await createPeerNode({
+      listen: ['/ip4/127.0.0.1/tcp/0'],
+      privateKeyPem: identity.material.privateKeyPem
+    })
+
+    try {
+      const result = await measureNetworkSpeed(node, address, {
+        bytes: 512 * 1024,
+        pings: 3
+      })
+      expect(result.downloadMbps).toBeGreaterThan(0)
+      expect(result.uploadMbps).toBeGreaterThan(0)
+      expect(result.latencyMs).toBeGreaterThan(0)
+      expect(result.measuredAt).toBeGreaterThan(0)
+    } finally {
+      await node.stop()
+      rmSync(dir, { recursive: true, force: true })
+      await hub3.stop()
+    }
+  }, 60_000)
 
   it('lehnt Anfragen ohne gültige Sitzung ab', async () => {
     const hub2 = new HubNode({

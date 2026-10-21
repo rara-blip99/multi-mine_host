@@ -27,6 +27,7 @@ import { keystore } from './security/keystore'
 import { createPeerNode } from './net/transport'
 import type { PeerNode } from './net/transport'
 import { PeerManager } from './net/peer-manager'
+import { measureNetworkSpeed } from './net/speed-test'
 import { HubClient } from './hub/hub-client'
 import { HubNode } from './hub/hub-node'
 import { LeaseClient } from './host/lease-client'
@@ -84,6 +85,7 @@ export class AppService {
   private heartbeatTimer: NodeJS.Timeout | null = null
   private backupTimer: NodeJS.Timeout | null = null
   private perfTimer: NodeJS.Timeout | null = null
+  private networkTimer: NodeJS.Timeout | null = null
   private failoverTimer: NodeJS.Timeout | null = null
   private started = false
   private takeoverInProgress = false
@@ -178,6 +180,7 @@ export class AppService {
     this.startHeartbeat()
     this.startPerformanceLoop()
     this.startBackupTimer()
+    this.startNetworkTimer()
     logger.info('app', 'Multi-Mine Host gestartet', { nodeId: this.state.identity?.nodeId })
   }
 
@@ -186,6 +189,7 @@ export class AppService {
     this.stopHeartbeat()
     this.stopBackupTimer()
     this.stopPerformanceLoop()
+    this.stopNetworkTimer()
     await this.lease?.release('Anwendung wird beendet')
     this.lease?.stop()
     await this.server?.stop(30_000)
@@ -267,6 +271,8 @@ export class AppService {
     await hub.connect()
     this.hub = hub
     this.patch({ hubConnected: true, hubError: null })
+    // Netzwerkqualitaet zum Hub messen (fliesst in die Host-Bewertung ein)
+    void this.measureNetwork()
   }
 
   /** Erstellt eine neue Gruppe auf dem Hub. */
@@ -500,13 +506,78 @@ export class AppService {
     this.perfTimer = null
   }
 
+  /** Regelmäßige Messung der Netzwerkqualität (alle 5 Minuten). */
+  private startNetworkTimer(): void {
+    this.stopNetworkTimer()
+    this.networkTimer = setInterval(() => {
+      void this.measureNetwork()
+    }, 5 * 60_000)
+  }
+
+  private stopNetworkTimer(): void {
+    if (this.networkTimer) clearInterval(this.networkTimer)
+    this.networkTimer = null
+  }
+
+  /**
+   * Misst die Netzwerkqualitaet zum Hub (Bandbreite, Latenz, Jitter).
+   * Das Ergebnis fliesst in die Host-Bewertung ein.
+   */
+  async measureNetwork(): Promise<void> {
+    const node = this.node
+    const hubAddress = this.session.hubAddress ?? this.state.settings.hubAddress
+    if (!node || !hubAddress) return
+    try {
+      const result = await measureNetworkSpeed(node, hubAddress)
+      if (result.downloadMbps <= 0 && result.uploadMbps <= 0) return
+      const capabilities = this.state.capabilities.filter(
+        (c) => c.nodeId !== this.identity.nodeId
+      )
+      const own = this.state.capabilities.find((c) => c.nodeId === this.identity.nodeId)
+      const updated: HostCapability = {
+        nodeId: this.identity.nodeId,
+        displayName: this.identity.displayName,
+        hostingAllowed: this.state.settings.hostingAllowed,
+        priority: this.state.settings.hostingPriority,
+        cpu: own?.cpu ?? (await this.perf.sample()).cpu,
+        memory: own?.memory ?? (await this.perf.sample()).memory,
+        disk: own?.disk ?? (await this.perf.sample()).disk,
+        network: {
+          uploadMbps: result.uploadMbps,
+          downloadMbps: result.downloadMbps,
+          latencyMs: result.latencyMs,
+          jitterMs: result.jitterMs,
+          relayOnly: own?.network.relayOnly ?? false,
+          advertisedAddresses: this.advertisedAddresses()
+        },
+        java: own?.java ?? (await this.perf.sample()).java,
+        stability: own?.stability ?? (await this.perf.sample()).stability,
+        requiredWorldBytes: this.state.world?.totalBytes ?? 0,
+        measuredAt: Date.now()
+      }
+      const all = [...capabilities, updated]
+      this.patch({ capabilities: all })
+      this.patch({ scores: this.computeScores(all) })
+      logger.info('app', 'Netzwerkqualität gemessen', {
+        download: result.downloadMbps,
+        upload: result.uploadMbps,
+        latency: result.latencyMs
+      })
+    } catch (err) {
+      logger.debug('app', 'Netzwerkmessung fehlgeschlagen', { error: String(err) })
+    }
+  }
+
   /** Aktuelle Leistungsdaten als HostCapability. */
   async currentCapability(): Promise<HostCapability> {
     const settings = this.state.settings
+    const own = this.state.capabilities.find((c) => c.nodeId === this.identity.nodeId)
     const sample = await this.perf.sample({
-      uploadMbps: this.state.capabilities.find((c) => c.nodeId === this.identity.nodeId)?.network.uploadMbps ?? 0,
-      downloadMbps: this.state.capabilities.find((c) => c.nodeId === this.identity.nodeId)?.network.downloadMbps ?? 0,
-      latencyMs: this.state.capabilities.find((c) => c.nodeId === this.identity.nodeId)?.network.latencyMs ?? 0,
+      uploadMbps: own?.network.uploadMbps ?? 0,
+      downloadMbps: own?.network.downloadMbps ?? 0,
+      latencyMs: own?.network.latencyMs ?? 0,
+      jitterMs: own?.network.jitterMs ?? 0,
+      relayOnly: own?.network.relayOnly ?? false,
       advertisedAddresses: this.advertisedAddresses()
     })
     const worldSize = this.state.world?.totalBytes ?? 0

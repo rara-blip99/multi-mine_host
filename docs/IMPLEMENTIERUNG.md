@@ -52,6 +52,7 @@ was noch offen ist.
 | Signierter RPC-Kanal mit Replay-Schutz | ✅ | `rpc-security.test.ts` |
 | Längenpräfixiertes Framing mit Größenlimit | ✅ | `framing.test.ts` |
 | Peer-Discovery über den Hub | ✅ | `integration-network.test.ts` |
+| Messung von Bandbreite, Latenz und Jitter zum Hub | ✅ | `integration-network.test.ts` |
 | Direkte Peer-Verbindung + signierte Weltanfrage | 🟡 | – |
 | Hole Punching (UDP) | ⬜ | – |
 | UPnP / NAT-PMP für automatische Port-Weiterleitung | ⬜ | – |
@@ -139,9 +140,8 @@ Priorisiert nach Nutzen für das Kernproblem (dynamisches Hosting):
 
 1. **Automatischer Failover im echten Betrieb** – die Zustandsmaschine ist
    implementiert, muss aber über echte Netzwerkabbrüche verifiziert werden.
-2. **Netzwerk-Geschwindigkeitsmessung** – der Host-Score nutzt bisher
-   geschätzte Werte; eine echte Messung über den Hub ist vorbereitet, aber
-   nicht implementiert.
+2. **Netzwerk-Geschwindigkeitsmessung** — erledigt: Der Hub misst über einen
+   eigenen Protokollstrom Upload, Download, Latenz und Jitter.
 3. **Welt-Replikation auf einen zweiten PC** – für echte Ausfallsicherheit
    ohne Datenverlust ist eine Weltkopie auf einem zweiten Mitglied nötig.
 4. **Stabile Spieleradresse** – DNS-/VPN-Anleitung und ggf. ein
@@ -155,6 +155,6 @@ Priorisiert nach Nutzen für das Kernproblem (dynamisches Hosting):
 | Der automatische Failover ist noch nicht über echte Netzausfälle verifiziert | Der Code ist implementiert und auf Logikebene getestet; die End-to-End-Prüfung steht aus. |
 | `Fencing` verschiebt die Welt in die Quarantäne, stellt sie aber nicht automatisch wieder her | Der Host muss die Welt neu anfordern – das ist der vorgesehene Weg. |
 | Der Serverstart ohne Lease wird verhindert, auch im Single-Player-Betrieb ohne Gruppe | Gewollt: ohne Hub gibt es keine Wettlaufsicherheit. Ein reiner Offline-Modus ist nicht implementiert. |
-| Die Netzwerkbandbreite wird nicht gemessen | Upload/Download stehen auf 0 und werden als „unbekannt" neutral gewertet. |
+| Die Netzwerkbandbreite wird nicht gemessen | Behoben: Der Hub bietet einen Messstrom (`/multimine/speed/1.0.0`), der Upload, Download, Latenz und Jitter misst. |
 | `session.lock` bleibt beim Import erhalten | Die Integritätsprüfung warnt davor. |
 | Der Hub speichert seinen Zustand unverschlüsselt | Er enthält keine Geheimnisse, nur Mitglieds-IDs und Lease-Zustände. |

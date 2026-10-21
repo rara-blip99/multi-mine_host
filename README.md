@@ -248,6 +248,8 @@ rechte ist möglich.
 | `npm test` | Vitest-Testsuite (alle Tests) |
 | `npm run test:watch` | Tests im Watch-Modus |
 | `npm run hub` | Startet den Koordinations-Hub standalone |
+| `npm run hub:built` | Startet den gebauten Hub (`out/main/hub.mjs`) |
+| `npm run icon` | Erzeugt das Anwendungs-Icon neu |
 | `npm run dist` | Build + Windows-Installer |
 
 ### Architekturregeln
@@ -327,12 +329,16 @@ Die Bewertung ist gewichtet und in der Oberfläche nachvollziehbar:
 | Kriterium | Gewicht |
 |---|---|
 | CPU-Leistung (Kernzahl **und** Modellklasse **und** aktuelle Auslastung) | 22 |
-| Netzwerk (Upload, Download, Latenz, Relay-Penalty) | 20 |
+| Netzwerk (Upload, Download, Latenz, Jitter, Relay-Penalty) | 20 |
 | Stabilität (bisherige Verfügbarkeit, Laufzeit) | 15 |
 | Hosting-Priorität (Vorgabe des Benutzers) | 15 |
 | Arbeitsspeicher (Überschuss über den Bedarf) | 13 |
 | Laufwerk (freier Platz, Schreibrate) | 10 |
 | Welt bereits lokal vorhanden (kein Transfer nötig) | 5 |
+
+Die Netzwerkwerte werden **gemessen**, nicht geschätzt: Der Hub stellt einen
+Messstrom bereit, über den Upload, Download, Latenz und Jitter ermittelt
+werden (alle 5 Minuten, 4 MB je Richtung).
 
 **Harte Ausschlusskriterien** (ein Kandidat muss alle erfüllen):
 

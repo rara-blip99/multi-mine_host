@@ -17,6 +17,7 @@ import type {
 import { createPeerNode } from '../net/transport'
 import type { PeerNode } from '../net/transport'
 import { readFrames, writeFrame } from '../net/framing'
+import { handleSpeedRequest, SPEED_PROTOCOL } from '../net/speed-test'
 import { HubError, HubService } from './hub-service'
 import type { HubOptions } from './hub-service'
 import { IdentityStore, deriveNodeId } from '../security/identity'
@@ -61,6 +62,7 @@ export class HubNode {
       appName: 'multi-mine-hub/0.1.0'
     })
     await this.peer.handle(PROTOCOLS.hub, (stream) => this.handleStream(stream))
+    await this.peer.handle(SPEED_PROTOCOL, (stream) => handleSpeedRequest(stream))
     this.persistTimer = setInterval(() => this.persist(), 10_000)
     logger.info('hub', 'Hub gestartet', {
       peerId: this.peer.node.peerId.toString(),
