@@ -474,3 +474,25 @@ export interface DiagnosticsReport {
   server: ServerStatus
   recentLogs: LogEntry[]
 }
+
+// ---------------------------------------------------------------------------
+// Updates
+// ---------------------------------------------------------------------------
+
+export interface ReleaseAsset {
+  name: string
+  size: number
+  browserDownloadUrl: string
+  contentType: string
+}
+
+export interface UpdateInfo {
+  currentVersion: string
+  latestVersion: string | null
+  updateAvailable: boolean
+  releaseUrl: string | null
+  notes: string | null
+  publishedAt: string | null
+  assets: ReleaseAsset[]
+  error: string | null
+}

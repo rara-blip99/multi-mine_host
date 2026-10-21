@@ -85,7 +85,8 @@ async function makePeer(
     provideWorld: async () => null,
     quiesceWorld: async () => ({ ok: false, versionId: '', error: 'nicht konfiguriert' }),
     publicKeys: () => publicKeys,
-    peerIdOf: (nodeId) => peers.get(nodeId)
+    peerIdOf: (nodeId) => peers.get(nodeId),
+    backupDir: () => dir
   })
   await peerManager.listen()
 

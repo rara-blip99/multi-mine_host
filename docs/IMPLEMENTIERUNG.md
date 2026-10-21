@@ -104,7 +104,7 @@ was noch offen ist.
 | Vorherige Welt in Quarantäne statt Überschreiben | ✅ | `backup.test.ts` |
 | Aufbewahrungsregel, letztes gültiges Backup geschützt | ✅ | `backup.test.ts` |
 | Größenlimit für Backups | ✅ | `backup.test.ts` |
-| Replikation auf einen zweiten PC | 🟡 | (Kernmechanik getestet, Anstoß manuell) |
+| Replikation auf einen zweiten PC | ✅ | (Kernmechanik getestet, Anstoß manuell) |
 | Automatischer Replikations-Scheduler | ⬜ | – |
 | Verschlüsselung der Backups at rest | ⬜ | – |
 
@@ -130,7 +130,7 @@ was noch offen ist.
 | Zustandswiederherstellung nach Neustart (atomar + `.bak`) | ✅ (`atomic-store.test.ts`) |
 | Journal der sicherheitsrelevanten Ereignisse | ✅ (`atomic-store.test.ts`) |
 | Diagnosebericht | 🟡 |
-| Update-Manager (GitHub Releases) | ⬜ |
+| Update-Manager (GitHub Releases) | ✅ | `update-manager.test.ts` |
 | Autostart bei Windows-Login | 🟡 (Einstellung vorhanden, Systemintegration offen) |
 | Tray-Symbol | 🟡 |
 
@@ -140,13 +140,14 @@ Priorisiert nach Nutzen für das Kernproblem (dynamisches Hosting):
 
 1. **Automatischer Failover im echten Betrieb** – die Zustandsmaschine ist
    implementiert, muss aber über echte Netzwerkabbrüche verifiziert werden.
-2. **Netzwerk-Geschwindigkeitsmessung** — erledigt: Der Hub misst über einen
-   eigenen Protokollstrom Upload, Download, Latenz und Jitter.
-3. **Welt-Replikation auf einen zweiten PC** – für echte Ausfallsicherheit
+2. **Welt-Replikation auf einen zweiten PC** – für echte Ausfallsicherheit
    ohne Datenverlust ist eine Weltkopie auf einem zweiten Mitglied nötig.
-4. **Stabile Spieleradresse** – DNS-/VPN-Anleitung und ggf. ein
+   Die Replikation von *Backups* ist umgesetzt; die Replikation der *Welt*
+   selbst fehlt noch.
+3. **Stabile Spieleradresse** – DNS-/VPN-Anleitung und ggf. ein
    UDP-Hole-Punching.
-5. **Update-Manager** – Update über GitHub Releases mit Signaturprüfung.
+4. **Automatische Update-Installation** – der Update-Manager lädt geprüfte
+   Installer herunter, startet sie aber nicht selbst.
 
 ## 10. Bekannte Fehler und Lücken
 

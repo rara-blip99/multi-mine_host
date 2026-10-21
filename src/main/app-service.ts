@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, readdirSync, symlinkSync, lstatSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, readdirSync, symlinkSync, lstatSync, readFileSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { cp } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
@@ -20,6 +20,7 @@ import type {
 import type { InviteInfo, PeerDiscoveryInfo } from '@shared/protocol'
 import { AtomicStore, Journal } from './core/atomic-store'
 import { Paths } from './core/paths'
+import { appVersion } from './core/app-info'
 import { logger } from './core/logger'
 import { identityStore } from './security/identity'
 import type { IdentityStore } from './security/identity'
@@ -40,6 +41,8 @@ import { checkWorldIntegrity, listWorldsIn, readWorldInfo } from './minecraft/wo
 import { buildManifest, verifyWorld } from './sync/manifest'
 import { activateWorld, hasFreeSpace } from './sync/world-sync'
 import { BackupManager } from './backup/backup-manager'
+import { UpdateManager } from './update/update-manager'
+import type { UpdateInfo } from '@shared/types'
 import {
   defaultAppState,
   defaultFailoverState,
@@ -247,7 +250,8 @@ export class AppService {
       provideWorld: () => this.provideWorld(),
       quiesceWorld: (requesterId, epoch) => this.quiesceForHandover(requesterId, epoch),
       publicKeys: () => this.memberPublicKeys(),
-      peerIdOf: (nodeId) => this.peerIdOf(nodeId)
+      peerIdOf: (nodeId) => this.peerIdOf(nodeId),
+      backupDir: () => this.state.settings.backupsDir
     })
     await this.peers.listen()
     return this.node
@@ -931,11 +935,74 @@ export class AppService {
       const backups = this.backups.list()
       this.patch({ backups })
       this.journal.append('backup', { kind, id: result.info.id, size: result.info.sizeBytes })
+      // Auf einen zweiten Gruppen-PC replizieren (best effort).
+      void this.replicateBackup(result.info)
       return { ok: true, info: result.info }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       logger.error('app', 'Backup fehlgeschlagen', { error: message })
       return { ok: false, error: message }
+    }
+  }
+
+  /**
+   * Repliziert ein Backup auf ein anderes Mitglied der Gruppe.
+   *
+   * Ziel ist ein Mitglied, das online ist, genügend freien Speicher hat und
+   * selbst nicht der aktuelle Host ist. Scheitert die Replikation, bleibt das
+   * lokale Backup erhalten - es wird nichts gelöscht.
+   */
+  async replicateBackup(info: BackupInfo): Promise<{ ok: boolean; targetId?: string; error?: string }> {
+    const peers = this.peers
+    if (!peers) return { ok: false, error: 'Keine Peer-Verbindungen' }
+
+    const needed = info.sizeBytes * 1.2
+    const target = this.state.members.find((m) => {
+      if (m.nodeId === this.identity.nodeId) return false
+      if (!m.online) return false
+      const cap = this.state.capabilities.find((c) => c.nodeId === m.nodeId)
+      if (!cap) return false
+      if (cap.disk.freeBytes < needed) return false
+      return peers.peer(m.nodeId) !== undefined
+    })
+
+    if (!target) {
+      return {
+        ok: false,
+        error: 'Kein passendes Mitglied für die Replikation gefunden (offline oder zu wenig Speicherplatz)'
+      }
+    }
+
+    try {
+      const result = await peers.sendBackup(target.nodeId, info.path, {
+        id: info.id,
+        kind: info.kind,
+        worldName: info.worldName,
+        worldVersionId: info.worldVersionId,
+        mcVersion: info.mcVersion,
+        dataVersion: info.dataVersion,
+        sizeBytes: info.sizeBytes,
+        uncompressedBytes: info.uncompressedBytes,
+        sha256: info.sha256,
+        createdAt: info.createdAt
+      })
+      if (!result.ok) {
+        logger.warn('app', 'Backup-Replikation fehlgeschlagen', {
+          target: target.nodeId,
+          error: result.error
+        })
+        return { ok: false, targetId: target.nodeId, error: result.error }
+      }
+      info.replicated = true
+      const list = this.backups.list().map((b) => (b.id === info.id ? { ...b, replicated: true } : b))
+      this.patch({ backups: list })
+      this.journal.append('backup-replicated', { id: info.id, target: target.nodeId })
+      logger.info('app', 'Backup repliziert', { id: info.id, target: target.displayName })
+      return { ok: true, targetId: target.nodeId }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.warn('app', 'Backup-Replikation fehlgeschlagen', { error: message })
+      return { ok: false, targetId: target.nodeId, error: message }
     }
   }
 
@@ -1480,6 +1547,23 @@ export class AppService {
   /** Journal-Einträge (Diagnose). */
   journalEntries(limit = 200): ReturnType<Journal['read']> {
     return this.journal.read(limit)
+  }
+
+  /**
+   * Prüft, ob eine neuere Version verfügbar ist.
+   */
+  async checkForUpdates(): Promise<UpdateInfo> {
+    const manager = new UpdateManager({
+      repository: 'rara-blip99/multi-mine_host',
+      currentVersion: this.appVersion,
+      downloadDir: join(Paths.root(), 'updates')
+    })
+    return manager.check()
+  }
+
+  /** Version der laufenden Anwendung. */
+  get appVersion(): string {
+    return appVersion()
   }
 
   // -------------------------------------------------------------------------

@@ -227,6 +227,38 @@ export interface QuiesceResultFrame {
   error?: string
 }
 
+/** Angebot einer Backup-Datei an ein anderes Mitglied. */
+export interface BackupOfferFrame {
+  type: 'backup-offer'
+  groupId: string
+  /** Metadaten des Backups (ohne Pfad). */
+  meta: {
+    id: string
+    kind: string
+    worldName: string
+    worldVersionId: string
+    mcVersion: string
+    dataVersion: number
+    sizeBytes: number
+    uncompressedBytes: number
+    sha256: string
+    createdAt: number
+  }
+}
+
+/** Antwort auf ein Backup-Angebot. */
+export interface BackupAcceptFrame {
+  type: 'backup-accept'
+  ok: boolean
+  error?: string
+}
+
+/** Abschluss der Backup-Uebertragung. */
+export interface BackupCompleteFrame {
+  type: 'backup-complete'
+  sha256: string
+}
+
 export interface PeerDiscoveryInfo {
   nodeId: string
   displayName: string

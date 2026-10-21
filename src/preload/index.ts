@@ -59,7 +59,10 @@ const api = {
 
   requestTakeover: () => ipcRenderer.invoke(IPC.failoverTakeover),
   diagnostics: () => ipcRenderer.invoke(IPC.diagnosticsReport),
-  embeddedHubAddress: () => ipcRenderer.invoke(IPC.hubEmbeddedAddress)
+  embeddedHubAddress: () => ipcRenderer.invoke(IPC.hubEmbeddedAddress),
+  checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),
+  downloadUpdate: (assetName: string, sha256: string) =>
+    ipcRenderer.invoke(IPC.updateDownload, assetName, sha256)
 }
 
 contextBridge.exposeInMainWorld('mmh', api)

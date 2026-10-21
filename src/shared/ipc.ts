@@ -12,6 +12,7 @@ import type {
   WorldManifest
 } from './types'
 import type { InviteInfo } from './protocol'
+import type { UpdateInfo } from './types'
 
 /**
  * IPC-Kanaele zwischen Renderer und Main-Prozess.
@@ -58,6 +59,9 @@ export const IPC = {
 
   diagnosticsReport: 'diagnostics:report',
   hubEmbeddedAddress: 'hub:embedded-address',
+
+  updateCheck: 'update:check',
+  updateDownload: 'update:download',
 
   /** Zustandsänderungen werden an den Renderer gepusht. */
   stateChanged: 'state:changed'
@@ -123,6 +127,8 @@ export interface MmhApi {
   requestTakeover(): Promise<{ ok: boolean; reason: string }>
   diagnostics(): Promise<DiagnosticsReport>
   embeddedHubAddress(): Promise<string | null>
+  checkForUpdates(): Promise<UpdateInfo>
+  downloadUpdate(assetName: string, sha256: string): Promise<{ ok: boolean; path?: string; error?: string }>
 }
 
 declare global {

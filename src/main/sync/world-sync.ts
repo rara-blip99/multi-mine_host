@@ -102,7 +102,8 @@ export interface ReceiveResult extends SyncResult {
   filesSkipped: number
 }
 
-function frame(type: number, body: Buffer | Uint8Array): Uint8Array {
+/** Erzeugt ein typisiertes Frame (Typ-Byte + Nutzlast). */
+export function frame(type: number, body: Buffer | Uint8Array): Uint8Array {
   return Buffer.concat([Buffer.from([type]), body])
 }
 

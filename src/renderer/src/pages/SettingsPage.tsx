@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useApp, formatBytes } from '../state'
 import { Card, Field, Notice, Pill, Switch } from '../components/ui'
+import type { UpdateInfo } from '@shared/types'
 
 /**
  * Einstellungen: Minecraft, Speicher, Netzwerk, Verhalten.
@@ -10,6 +11,22 @@ export default function SettingsPage(): React.JSX.Element {
   const s = state.settings
   const [diagnostics, setDiagnostics] = useState<string>('')
   const [displayName, setDisplayName] = useState(state.identity?.displayName ?? '')
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
+  const [checking, setChecking] = useState(false)
+
+  const checkUpdate = async (): Promise<void> => {
+    setChecking(true)
+    try {
+      const info = await api.checkForUpdates()
+      setUpdateInfo(info)
+      if (info.updateAvailable) notify(`Version ${info.latestVersion} ist verfügbar`, 'ok')
+      else if (info.error) notify('Updateprüfung fehlgeschlagen', 'warn')
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Updateprüfung fehlgeschlagen', 'error')
+    } finally {
+      setChecking(false)
+    }
+  }
 
   useEffect(() => {
     setDisplayName(state.identity?.displayName ?? '')
@@ -262,6 +279,41 @@ export default function SettingsPage(): React.JSX.Element {
             </span>
           </div>
         </Notice>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <Card
+          title="Updates"
+          hint={`Installierte Version: ${updateInfo?.currentVersion ?? '–'}`}
+          actions={
+            <button className="btn small" onClick={() => void checkUpdate()} disabled={checking}>
+              {checking ? 'Prüfe…' : 'Nach Updates suchen'}
+            </button>
+          }
+        >
+          {!updateInfo ? (
+            <div className="small dim">Noch nicht geprüft.</div>
+          ) : updateInfo.error ? (
+            <Notice kind="warn">Updateprüfung fehlgeschlagen: {updateInfo.error}</Notice>
+          ) : updateInfo.updateAvailable ? (
+            <>
+              <Notice kind="ok">
+                Version <strong>{updateInfo.latestVersion}</strong> ist verfügbar (aktuell {updateInfo.currentVersion}).
+                {updateInfo.publishedAt && ` Veröffentlicht am ${new Date(updateInfo.publishedAt).toLocaleDateString('de-DE')}.`}
+              </Notice>
+              {updateInfo.notes && <pre className="log" style={{ maxHeight: 180 }}>{updateInfo.notes}</pre>}
+              {updateInfo.releaseUrl && (
+                <a href={updateInfo.releaseUrl} target="_blank" rel="noreferrer" className="small">
+                  Release-Seite öffnen →
+                </a>
+              )}
+            </>
+          ) : (
+            <Notice kind="info">
+              Die installierte Version {updateInfo.currentVersion} ist aktuell.
+            </Notice>
+          )}
+        </Card>
       </div>
     </>
   )

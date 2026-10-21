@@ -1,20 +1,36 @@
 import type { Stream } from '@libp2p/interface'
 import { multiaddr } from '@multiformats/multiaddr'
+import { createHash } from 'node:crypto'
+import {
+  createReadStream,
+  closeSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  writeSync
+} from 'node:fs'
+import { dirname } from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import { PROTOCOLS, signatureBody } from '@shared/protocol'
-import type { PeerDiscoveryInfo } from '@shared/protocol'
+import type { PeerDiscoveryInfo, BackupOfferFrame, BackupAcceptFrame } from '@shared/protocol'
 import type { WorldManifest } from '@shared/types'
 import type { PeerNode } from './transport'
 import { resolvePeerId } from './transport'
 import { readFrames, writeFrame } from './framing'
 import { IdentityStore } from '../security/identity'
+import { resolveWithin } from '../security/path-guard'
 import { logger } from '../core/logger'
 import {
   FRAME_CONTROL,
   FRAME_ERROR,
+  FRAME_FILE_DATA,
   FRAME_TRANSFER_END,
   receiveWorld,
   sendWorld
 } from '../sync/world-sync'
+import { frame } from '../sync/world-sync'
 import type { ReceiveResult, ResumeEntry } from '../sync/world-sync'
 
 /**
@@ -104,6 +120,8 @@ export interface PeerManagerOptions {
   publicKeys: () => Map<string, string>
   /** Aufloesung nodeId -> Peer-ID. */
   peerIdOf: (nodeId: string) => string | undefined
+  /** Verzeichnis, in dem empfangene Backups abgelegt werden. */
+  backupDir: () => string
 }
 
 export class PeerManager {
@@ -356,7 +374,193 @@ export class PeerManager {
     }
   }
 
-  /** Behandelt eine eingehende Weltanfrage. */
+  /**
+   * Sendet ein Backup an ein anderes Mitglied (Replikation).
+   */
+  async sendBackup(
+    targetNodeId: string,
+    archivePath: string,
+    meta: BackupOfferFrame['meta'],
+    timeoutMs = 300_000
+  ): Promise<{ ok: boolean; error?: string }> {
+    const peer = this.peers.get(targetNodeId)
+    const peerId = peer?.peerId || this.opts.peerIdOf(targetNodeId)
+    if (!peerId) {
+      return { ok: false, error: `Keine Peer-ID für ${targetNodeId} bekannt` }
+    }
+
+    let stream: Stream
+    try {
+      stream = await this.opts.node.dial(peerId, PROTOCOLS.world, timeoutMs)
+    } catch (err) {
+      return {
+        ok: false,
+        error: `Verbindung zu ${targetNodeId} fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}`
+      }
+    }
+
+    try {
+      const offer: BackupOfferFrame = {
+        type: 'backup-offer',
+        groupId: this.opts.groupId,
+        meta
+      }
+      await writeFrame(
+        stream,
+        Buffer.concat([Buffer.from([FRAME_CONTROL]), Buffer.from(JSON.stringify(offer), 'utf8')])
+      )
+
+      const iterator = readFrames(stream)
+      const first = await iterator.next()
+      if (first.done || !first.value) throw new Error('Keine Antwort auf das Backup-Angebot')
+      const accept = JSON.parse(new TextDecoder().decode(first.value.subarray(1))) as BackupAcceptFrame
+      if (accept.type !== 'backup-accept' || !accept.ok) {
+        return { ok: false, error: accept.error ?? 'Das Mitglied hat das Backup abgelehnt' }
+      }
+
+      // Datei streamen
+      const hash = createHash('sha256')
+      await pipeline(
+        createReadStream(archivePath, { highWaterMark: 256 * 1024 }),
+        async function* (source) {
+          for await (const chunk of source) {
+            const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)
+            hash.update(buf)
+            await writeFrame(stream, frame(FRAME_FILE_DATA, buf), 16 * 1024 * 1024)
+          }
+        }
+      )
+
+      const digest = hash.digest('hex')
+      if (digest !== meta.sha256) {
+        return { ok: false, error: 'Prüfsumme der gesendeten Datei stimmt nicht' }
+      }
+      await writeFrame(
+        stream,
+        frame(FRAME_CONTROL, Buffer.from(JSON.stringify({ type: 'backup-complete', sha256: digest })))
+      )
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    } finally {
+      try {
+        await stream.close()
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
+   * Nimmt ein repliziertes Backup entgegen.
+   */
+  async receiveBackup(
+    stream: Stream,
+    targetDir: string
+  ): Promise<{ ok: boolean; error?: string; sha256?: string }> {
+    const iterator = readFrames(stream)
+    const first = await iterator.next()
+    if (first.done || !first.value) return { ok: false, error: 'Kein Angebot empfangen' }
+    if (first.value[0] !== FRAME_CONTROL) return { ok: false, error: 'Unerwartetes Format' }
+
+    const offer = JSON.parse(new TextDecoder().decode(first.value.subarray(1))) as BackupOfferFrame
+    if (offer.type !== 'backup-offer') return { ok: false, error: 'Unerwartetes Format' }
+    if (offer.groupId !== this.opts.groupId) {
+      return { ok: false, error: 'Angebot gehört zu einer anderen Gruppe' }
+    }
+
+    // Der Dateiname wird streng geprueft (kein Pfad, keine Traversal).
+    let safeName = offer.meta.id.replace(/[^A-Za-z0-9._-]/g, '_')
+    if (!safeName.endsWith('.tar.gz')) safeName = `${safeName}.tar.gz`
+    const target = resolveWithin(targetDir, safeName)
+    const partPath = `${target}.part`
+
+    const respond = (payload: unknown): void => {
+      void writeFrame(
+        stream,
+        Buffer.concat([Buffer.from([FRAME_CONTROL]), Buffer.from(JSON.stringify(payload), 'utf8')])
+      ).catch(() => {
+        /* ignore */
+      })
+    }
+
+    try {
+      mkdirSync(dirname(target), { recursive: true })
+      const handle = openSync(partPath, 'w')
+      const hash = createHash('sha256')
+      let received = 0
+      try {
+        for await (const frame of iterator) {
+          if (frame[0] !== FRAME_FILE_DATA) break
+          const data = frame.subarray(1)
+          hash.update(data)
+          writeSync(handle, data, 0, data.byteLength, received)
+          received += data.byteLength
+          if (received > offer.meta.sizeBytes * 2) {
+            throw new Error('Übertragene Datenmenge überschreitet das angekündigte Maß')
+          }
+        }
+      } finally {
+        closeSync(handle)
+      }
+
+      const digest = hash.digest('hex')
+      if (digest !== offer.meta.sha256) {
+        rmSync(partPath, { force: true })
+        respond({ type: 'backup-accept', ok: false, error: 'Prüfsumme stimmt nicht überein' })
+        return { ok: false, error: 'Prüfsumme stimmt nicht überein' }
+      }
+
+      renameSync(partPath, target)
+      const meta = {
+        id: offer.meta.id,
+        kind: offer.meta.kind,
+        createdAt: offer.meta.createdAt,
+        worldName: offer.meta.worldName,
+        worldVersionId: offer.meta.worldVersionId,
+        sizeBytes: offer.meta.sizeBytes,
+        uncompressedBytes: offer.meta.uncompressedBytes,
+        mcVersion: offer.meta.mcVersion,
+        dataVersion: offer.meta.dataVersion,
+        sha256: offer.meta.sha256,
+        verified: true,
+        replicated: true,
+        path: target
+      }
+      writeFileSync(`${target}.meta.json`, JSON.stringify(meta, null, 2), 'utf8')
+
+      respond({ type: 'backup-accept', ok: true })
+      return { ok: true, sha256: digest }
+    } catch (err) {
+      try {
+        rmSync(partPath, { force: true })
+      } catch {
+        /* ignore */
+      }
+      const message = err instanceof Error ? err.message : String(err)
+      respond({ type: 'backup-accept', ok: false, error: message })
+      return { ok: false, error: message }
+    }
+  }
+
+  /**
+   * Nimmt ein repliziertes Backup entgegen und legt es im Backup-Speicher ab.
+   */
+  private async handleBackupOffer(
+    stream: Stream,
+    offer: BackupOfferFrame
+  ): Promise<void> {
+    const result = await this.receiveBackup(stream, this.opts.backupDir())
+    if (!result.ok) {
+      logger.warn('peer-manager', 'Empfangenes Backup abgelehnt', { error: result.error })
+    } else {
+      logger.info('peer-manager', 'Backup repliziert', { id: offer.meta.id })
+    }
+  }
+
+  /**
+   * Behandelt eine eingehende Weltanfrage.
+   */
   private async handleIncoming(stream: Stream): Promise<void> {
     const iterator = readFrames(stream)
     try {
@@ -371,6 +575,10 @@ export class PeerManager {
 
       if (parsed.type === 'quiesce') {
         await this.handleQuiesce(stream, parsed)
+        return
+      }
+      if ((parsed as unknown as BackupOfferFrame).type === 'backup-offer') {
+        await this.handleBackupOffer(stream, parsed as unknown as BackupOfferFrame)
         return
       }
       const request = parsed as WorldRequestFrame

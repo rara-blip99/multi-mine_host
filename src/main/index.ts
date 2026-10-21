@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AppService } from './app-service'
+import { UpdateManager } from './update/update-manager'
 import { logger } from './core/logger'
 import { Paths } from './core/paths'
 import { IPC } from '@shared/ipc'
@@ -194,6 +195,14 @@ function registerIpc(service: AppService): void {
     }
   })
   handle(IPC.hubEmbeddedAddress, () => service.embeddedHubAddress())
+  handle(IPC.updateCheck, () => service.checkForUpdates())
+  handle(IPC.updateDownload, (asset: never, sha: never) =>
+    new UpdateManager({
+      repository: 'rara-blip99/multi-mine_host',
+      currentVersion: service.appVersion,
+      downloadDir: join(Paths.root(), 'updates')
+    }).download(asset as unknown as string, sha as unknown as string)
+  )
 }
 
 app.whenReady().then(async () => {
