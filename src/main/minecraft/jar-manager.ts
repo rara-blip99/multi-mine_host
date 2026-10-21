@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { createWriteStream, existsSync, mkdirSync, statSync, readFileSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, statSync, readFileSync, readdirSync, renameSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
@@ -128,7 +128,6 @@ export async function ensurePaperJar(
 
   const actual = sha256File(tmp)
   if (actual !== download.checksums.sha256) {
-    const { unlinkSync } = require('node:fs') as typeof import('node:fs')
     try {
       unlinkSync(tmp)
     } catch {
@@ -139,7 +138,6 @@ export async function ensurePaperJar(
     )
   }
 
-  const { renameSync } = require('node:fs') as typeof import('node:fs')
   renameSync(tmp, target)
   logger.info('jar-manager', 'Server-JAR erfolgreich heruntergeladen', { version, build: build.id })
   return {
@@ -155,7 +153,6 @@ export async function ensurePaperJar(
 export function listLocalJars(): JarInfo[] {
   const dir = Paths.serverJars()
   if (!existsSync(dir)) return []
-  const { readdirSync } = require('node:fs') as typeof import('node:fs')
   const out: JarInfo[] = []
   for (const file of readdirSync(dir)) {
     const match = /^paper-(.+)-(\d+)\.jar$/.exec(file)

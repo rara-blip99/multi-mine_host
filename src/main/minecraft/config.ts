@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 
 /**
  * Erzeugung der Minecraft-Serverkonfiguration.
@@ -179,7 +180,6 @@ interface WhitelistJson {
  * "offline mode" verwendet). Wird nur fuer die Datei ops.json verwendet.
  */
 export function offlineUuid(name: string): string {
-  const { createHash } = require('node:crypto') as typeof import('node:crypto')
   const hash = createHash('md5').update(`OfflinePlayer:${name}`).digest()
   hash[6] = ((hash[6] ?? 0) & 0x0f) | 0x30
   hash[8] = ((hash[8] ?? 0) & 0x3f) | 0x80

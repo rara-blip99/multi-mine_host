@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync }
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { Paths } from '../core/paths'
+import { cjsRequire } from '../core/cjs'
 import { logger } from '../core/logger'
 
 /**
@@ -39,10 +40,15 @@ export class Keystore {
 
   private osSafeStorage(): { isEncryptionAvailable: boolean; encryptString(s: string): Buffer; decryptString(b: Buffer): string } | null {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { safeStorage } = require('electron')
+      const { safeStorage } = cjsRequire('electron') as {
+        safeStorage?: {
+          isEncryptionAvailable?: boolean
+          encryptString(s: string): Buffer
+          decryptString(b: Buffer): string
+        }
+      }
       if (safeStorage && typeof safeStorage.isEncryptionAvailable === 'boolean') {
-        return safeStorage
+        return safeStorage as never
       }
     } catch {
       /* nicht im Electron-Kontext */

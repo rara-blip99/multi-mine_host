@@ -7,8 +7,13 @@ import { HubClient } from '../src/main/hub/hub-client'
 import { IdentityStore } from '../src/main/security/identity'
 import { createPeerNode } from '../src/main/net/transport'
 import type { PeerNode } from '../src/main/net/transport'
-import type { GroupSnapshot, HostCapability, LeaseAcquireResult, InviteInfo } from '../src/shared/protocol'
-import type { GroupInfo } from '@shared/types'
+import type { InviteInfo } from '../src/shared/protocol'
+import type {
+  GroupInfo,
+  GroupSnapshot,
+  HostCapability,
+  LeaseAcquireResult
+} from '@shared/types'
 
 /**
  * Integrationstest ueber das echte Netzwerk (libp2p/TCP).

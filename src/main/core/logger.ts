@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, statSync, existsSync } from 'node:fs'
+import { appendFileSync, mkdirSync, statSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { Paths } from './paths'
 import type { LogEntry } from '@shared/types'
@@ -117,7 +117,7 @@ export const logger = new Logger()
 export function logFileSize(): number {
   try {
     if (existsSync(Paths.logs())) {
-      const files = require('node:fs').readdirSync(Paths.logs()) as string[]
+      const files = readdirSync(Paths.logs())
       let total = 0
       for (const f of files) total += statSync(join(Paths.logs(), f)).size
       return total

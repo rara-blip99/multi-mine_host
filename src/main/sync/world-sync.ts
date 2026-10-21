@@ -1,8 +1,20 @@
-import { createReadStream, createWriteStream, mkdirSync, renameSync, rmSync, existsSync, statSync, openSync, writeSync, closeSync } from 'node:fs'
+import {
+  createReadStream,
+  createWriteStream,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  existsSync,
+  statSync,
+  openSync,
+  writeSync,
+  closeSync,
+  readSync,
+  statfsSync
+} from 'node:fs'
 import { join, dirname, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
-import { writeSync as fsWriteSync } from 'node:fs'
 import type { Stream } from '@libp2p/interface'
 import type { SyncProgress, SyncResult, WorldManifest } from '@shared/types'
 import { readFrames, writeFrame } from '../net/framing'
@@ -201,7 +213,7 @@ export async function receiveWorld(
           }
           currentHash.update(body)
           if (currentHandle !== null) {
-            const written = fsWriteSync(
+            const written = writeSync(
               currentHandle,
               body,
               0,
@@ -475,7 +487,6 @@ export function activateWorld(stagingPath: string, activePath: string, quarantin
 /** Prueft, ob genug freier Speicherplatz vorhanden ist. */
 export function hasFreeSpace(targetPath: string, requiredBytes: number): boolean {
   try {
-    const { statfsSync } = require('node:fs') as typeof import('node:fs')
     const st = statfsSync(targetPath)
     const free = Number(st.bavail) * Number(st.bsize)
     return free > requiredBytes * 1.15
@@ -489,7 +500,6 @@ export function readBytes(path: string, offset: number, length: number): Buffer 
   const buf = Buffer.alloc(length)
   const fd = openSync(path, 'r')
   try {
-    const { readSync } = require('node:fs') as typeof import('node:fs')
     readSync(fd, buf, 0, length, offset)
   } finally {
     closeSync(fd)

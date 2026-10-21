@@ -2,21 +2,24 @@
   "name": "multi-mine-host",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Multi-Mine Host - dezentrales Minecraft-Hosting fuer Freundesgruppen",
   "author": "rara-blip99",
   "license": "MIT",
-  "main": "./out/main/index.js",
+  "main": "./out/main/index.mjs",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
+    "build": "npm run typecheck && node scripts/make-icon.mjs && electron-vite build && node scripts/copy-resources.mjs",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "icon": "node scripts/make-icon.mjs",
     "hub": "tsx hub/main.ts",
+    "hub:built": "node out/main/hub.mjs",
     "dist": "npm run build && electron-builder --win --publish never",
     "lint": "tsc --noEmit -p tsconfig.node.json"
   },

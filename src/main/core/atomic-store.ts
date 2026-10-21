@@ -6,6 +6,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
   writeSync
@@ -224,7 +225,6 @@ export function safeUnlink(file: string): void {
 export function safeRmDir(dir: string): void {
   try {
     if (existsSync(dir)) {
-      const { rmSync } = require('node:fs')
       rmSync(dir, { recursive: true, force: true })
     }
   } catch {

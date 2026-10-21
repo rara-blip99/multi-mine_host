@@ -1,5 +1,17 @@
 import { createHash } from 'node:crypto'
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import * as tar from 'tar'
@@ -264,7 +276,6 @@ export class BackupManager {
           const stamp = new Date().toISOString().replace(/[:.]/g, '-')
           const backupTarget = join(quarantine, `pre-restore-${stamp}`)
           try {
-            const { renameSync } = require('node:fs') as typeof import('node:fs')
             renameSync(targetWorldPath, backupTarget)
           } catch {
             rmSync(targetWorldPath, { recursive: true, force: true })
@@ -274,7 +285,6 @@ export class BackupManager {
         }
       }
       mkdirSync(resolve(targetWorldPath, '..'), { recursive: true })
-      const { renameSync } = require('node:fs') as typeof import('node:fs')
       renameSync(staging, targetWorldPath)
 
       logger.info('backup', 'Backup wiederhergestellt', { id: info.id, target: targetWorldPath })

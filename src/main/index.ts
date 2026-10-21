@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell, Tray, Menu } from 'electron'
-import { join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AppService } from './app-service'
 import { logger } from './core/logger'
@@ -13,7 +14,7 @@ import type {
 import type { AppState, DiagnosticsReport, ServerLogLine } from '@shared/types'
 import { formatBytes } from './app-service'
 
-const dirname = join(fileURLToPath(import.meta.url), '..')
+const currentDir = dirname(fileURLToPath(import.meta.url))
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -31,7 +32,7 @@ function createWindow(): void {
     title: 'Multi-Mine Host',
     autoHideMenuBar: true,
     webPreferences: {
-      preload: join(dirname, '../preload/index.mjs'),
+      preload: join(currentDir, '../preload/index.mjs'),
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false
@@ -51,13 +52,34 @@ function createWindow(): void {
   if (devServer) {
     void mainWindow.loadURL(devServer)
   } else {
-    void mainWindow.loadFile(join(dirname, '../renderer/index.html'))
+    void mainWindow.loadFile(join(currentDir, '../renderer/index.html'))
   }
+}
+
+/**
+ * Sucht das Tray-Icon an den moeglichen Orten (Build, Entwicklungs- und
+ * Installationsverzeichnis).
+ */
+function findTrayIcon(): string {
+  const candidates = [
+    join(currentDir, '../resources/icon.png'),
+    join(currentDir, '../../resources/icon.png'),
+    join(process.resourcesPath ?? '', 'resources', 'icon.png'),
+    join(app.getAppPath(), 'resources', 'icon.png')
+  ]
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate)) return candidate
+    } catch {
+      /* ignore */
+    }
+  }
+  return candidates[0] as string
 }
 
 function createTray(): void {
   try {
-    tray = new Tray(join(dirname, '../resources/icon.png'))
+    tray = new Tray(findTrayIcon())
     const menu = Menu.buildFromTemplate([
       {
         label: 'Multi-Mine Host öffnen',

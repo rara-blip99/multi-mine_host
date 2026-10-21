@@ -1,6 +1,7 @@
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs'
 import { join } from 'node:path'
+import { hostname } from 'node:os'
 import { Paths } from '../core/paths'
 import { logger } from '../core/logger'
 import type { NodeIdentity } from '@shared/types'
@@ -198,8 +199,7 @@ export class IdentityStore {
 }
 
 function defaultDisplayName(): string {
-  const os = require('node:os') as typeof import('node:os')
-  return os.hostname().slice(0, 32) || 'player'
+  return hostname().slice(0, 32) || 'player'
 }
 
 function dirname(p: string): string {

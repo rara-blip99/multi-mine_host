@@ -1,7 +1,7 @@
-import { app } from 'electron'
 import { mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { cjsRequire } from './cjs'
 
 /**
  * Zentrale Pfadaufloesung.
@@ -12,9 +12,22 @@ import { homedir } from 'node:os'
  * aufgeloest (siehe security/path-guard.ts).
  */
 
+/** Electron-API, falls die Anwendung in Electron laeuft. */
+function electronApp(): { getPath(name: string): string } | null {
+  try {
+    const electron = cjsRequire('electron') as {
+      app?: { getPath(name: string): string }
+    }
+    return electron.app ?? null
+  } catch {
+    return null
+  }
+}
+
 function baseDir(): string {
   try {
-    if (app && app.getPath) return app.getPath('userData')
+    const app = electronApp()
+    if (app) return app.getPath('userData')
   } catch {
     /* nicht im Electron-Kontext (Tests, Hub-Standalone) */
   }

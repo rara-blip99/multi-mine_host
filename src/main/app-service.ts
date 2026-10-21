@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, readdirSync, symlinkSync } from 'node:fs'
 import { join, basename } from 'node:path'
+import { cp } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import type {
   AppSettings,
@@ -1322,7 +1323,6 @@ export class AppService {
     }
     if (existsSync(source)) {
       try {
-        const { symlinkSync } = require('node:fs') as typeof import('node:fs')
         symlinkSync(source, target, 'junction')
       } catch {
         await copyDirectory(source, target)
@@ -1341,7 +1341,6 @@ function looksLikeWorldDir(path: string): boolean {
 
 /** Kopiert ein Verzeichnis rekursiv. */
 async function copyDirectory(source: string, target: string): Promise<void> {
-  const { cp } = require('node:fs/promises') as typeof import('node:fs/promises')
   await cp(source, target, { recursive: true, force: true })
 }
 

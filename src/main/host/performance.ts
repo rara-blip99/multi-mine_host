@@ -1,6 +1,16 @@
 import { execFile } from 'node:child_process'
-import { cpus, freemem, totalmem, uptime } from 'node:os'
-import { statfsSync, mkdtempSync, writeFileSync, openSync, fsyncSync, closeSync, rmSync, existsSync } from 'node:fs'
+import { cpus, freemem, totalmem, uptime, loadavg } from 'node:os'
+import {
+  statfsSync,
+  mkdtempSync,
+  writeFileSync,
+  openSync,
+  fsyncSync,
+  closeSync,
+  rmSync,
+  existsSync,
+  readFileSync
+} from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
@@ -210,7 +220,7 @@ export class PerformanceMonitor {
       writeMbps = megabytesPerSecond(Number(t1 - t0), size)
 
       const t2 = process.hrtime.bigint()
-      const read = require('node:fs').readFileSync(file)
+      const read = readFileSync(file)
       const t3 = process.hrtime.bigint()
       readMbps = megabytesPerSecond(Number(t3 - t2), read.length)
     } catch (err) {
@@ -291,6 +301,6 @@ function countPhysicalCores(): number {
 }
 
 function loadAvg1(): number {
-  const la = require('node:os').loadavg() as number[]
+  const la = loadavg() as number[]
   return la[0] ?? 0
 }
