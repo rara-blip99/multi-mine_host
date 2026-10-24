@@ -53,6 +53,8 @@ export interface GroupInfo {
 export interface GroupSnapshot {
   group: GroupInfo
   members: GroupMember[]
+  /** Leistungsdaten aller Mitglieder (fuer die Host-Auswahl). */
+  capabilities: HostCapability[]
   lease: HostLease | null
   world: WorldRegistryEntry | null
   serverTime: number
@@ -416,7 +418,13 @@ export interface AppSettings {
   hostingAllowed: boolean
   /** Multiaddr des Koordinations-Hubs. */
   hubAddress: string
-  /** Port, auf dem der eingebaute Hub lauscht (0 = kein eingebauter Hub). */
+  /** Interne Koordination auf diesem PC aktiv (eingebauter Hub)? */
+  embeddedHubEnabled: boolean
+  /**
+   * Port, auf dem der eingebaute Hub lauscht.
+   * 0 = kein fester Port (Zufallsport) - kein eingebauter Hub nur,
+   * wenn embeddedHubEnabled false ist.
+   */
   embeddedHubPort: number
   /** Verhalten beim Schliessen der App. */
   closeBehavior: 'keep-running' | 'stop-server' | 'quit'

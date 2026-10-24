@@ -19,6 +19,7 @@ export function defaultSettings(): AppSettings {
     hostingPriority: 50,
     hostingAllowed: true,
     hubAddress: '',
+    embeddedHubEnabled: true,
     embeddedHubPort: 0,
     closeBehavior: 'keep-running',
     autostart: false,

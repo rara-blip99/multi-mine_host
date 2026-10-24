@@ -45,6 +45,8 @@ export interface HubMemberRecord extends GroupMember {
   addresses: string[]
   /** Peer-ID (libp2p) des Mitglieds. */
   peerId: string | null
+  /** Zuletzt gemeldete Leistungsdaten. */
+  capability: HostCapability | null
 }
 
 export interface HubGroupRecord {
@@ -173,7 +175,8 @@ export class HubService {
       revoked: false,
       sessionToken,
       addresses: [],
-      peerId: null
+      peerId: null,
+      capability: null
     }
     record.members.set(requesterNodeId, member)
     this.groups.set(groupId, record)
@@ -241,7 +244,8 @@ export class HubService {
       revoked: false,
       sessionToken,
       addresses: payload.capability?.network.advertisedAddresses ?? [],
-      peerId: payload.peerId || null
+      peerId: payload.peerId || null,
+      capability: payload.capability ?? null
     }
     record.members.set(requesterNodeId, member)
     logger.info('hub', `Mitglied beigetreten`, {
@@ -414,6 +418,7 @@ export class HubService {
     member.lastSeenAt = now
     member.online = true
     if (capability) {
+      member.capability = capability
       member.addresses = capability.network.advertisedAddresses ?? addresses
     } else if (addresses.length) {
       member.addresses = addresses
@@ -551,9 +556,19 @@ export class HubService {
         revoked: m.revoked
       }))
     const world = this.authority.world(groupId)
+    const capabilities: HostCapability[] = [...record.members.values()]
+      .filter((m) => !m.revoked && m.capability)
+      .map((m) => ({
+        ...(m.capability as HostCapability),
+        // Der Hub ist die Wahrheit ueber Freigabe und Prioritaet.
+        hostingAllowed: m.hostingAllowed,
+        priority: m.hostingPriority,
+        displayName: m.displayName
+      }))
     return {
       group: { ...record.group, currentWorldVersionId: world?.versionId ?? null },
       members,
+      capabilities,
       lease: this.authority.status(groupId, now),
       world,
       serverTime: now

@@ -10,6 +10,7 @@ export default function Dashboard(): React.JSX.Element {
   const { state, api, notify } = useApp()
   const [logs, setLogs] = useState<ServerLogLine[]>([])
   const [busy, setBusy] = useState(false)
+  const [addresses, setAddresses] = useState<string[]>([])
 
   const lease = state.lease
   const hostMember = state.members.find((m) => m.nodeId === lease?.holderId)
@@ -27,6 +28,12 @@ export default function Dashboard(): React.JSX.Element {
           if (alive) setLogs(l)
         })
         .catch(() => undefined)
+      void api
+        .serverAddresses()
+        .then((a) => {
+          if (alive) setAddresses(a)
+        })
+        .catch(() => undefined)
     }
     load()
     const timer = setInterval(load, 4000)
@@ -38,6 +45,31 @@ export default function Dashboard(): React.JSX.Element {
 
   const serverRunning = state.server.state === 'running'
   const leaseValid = lease ? lease.expiresAt > Date.now() : false
+
+  // Fortschritt des Ein-Klick-Starts wird aus dem Failover-Fortschritt
+  // abgeleitet (dort laeuft derselbe Mechanismus). Ein pulsierender
+  // Fortschritt isst nur solange sichtbar, bis alle Schritte fertig sind.
+  const startPhases = ['detected', 'lease-acquired', 'draining', 'transferring', 'verifying', 'starting'] as const
+  const phaseRunning = startPhases.includes(state.failover.phase as (typeof startPhases)[number])
+  const phaseLabels: Record<string, string> = {
+    detected: 'Verbindung zum Koordinationsdienst wird hergestellt …',
+    'lease-acquired': 'Host-Lease übernommen',
+    draining: 'Voriger Host wird kontrolliert gestoppt …',
+    transferring: 'Welt wird übertragen …',
+    verifying: 'Welt wird geprüft …',
+    starting: 'Minecraft-Server startet …'
+  }
+
+  const startWorld = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const result = await api.startWorld()
+      if (result.ok) notify('Welt läuft - die Server-Adresse steht weiter unten', 'ok')
+      else notify(result.error ?? 'Start fehlgeschlagen', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const toggleServer = async (): Promise<void> => {
     setBusy(true)
@@ -82,17 +114,40 @@ export default function Dashboard(): React.JSX.Element {
               ⇄ Host übernehmen
             </button>
           )}
-          <button className="btn primary" onClick={() => void toggleServer()} disabled={busy}>
-            {serverRunning ? '⏹ Server stoppen' : '▶ Server starten'}
+          <button
+            className="btn primary"
+            onClick={() => void startWorld()}
+            disabled={busy || phaseRunning}
+          >
+            {phaseRunning ? '⏳ Start läuft …' : serverRunning ? '▶ Welt läuft' : '▶ Welt starten'}
           </button>
+          {(serverRunning || state.server.state === 'starting') && (
+            <button className="btn danger" onClick={() => void toggleServer()} disabled={busy}>
+              ⏹ Stoppen
+            </button>
+          )}
         </div>
       </div>
 
       {!state.group && (
         <Notice kind="info">
-          Sie sind noch keiner Gruppe beigetreten. Öffnen Sie <strong>Gruppe</strong>, um eine
-          Gruppe zu erstellen oder mit einem Einladungscode beizutreten. Ohne Gruppe kann der
-          Server nur lokal betrieben werden.
+          Sie sind noch keiner Gruppe beigetreten. Öffnen Sie <strong>Gruppe</strong>, um mit einem
+          Klick eine Gruppe zu erstellen (Koordinationsdienst läuft dann auf diesem PC) oder einen
+          Einladungslink einzufügen.
+        </Notice>
+      )}
+
+      {!state.hubConnected && state.group && (
+        <Notice kind="warn">
+          Der Koordinationsdienst ist momentan nicht erreichbar. Es wird im Hintergrund alle 15 Sekunden
+          ein Neuverbindungsversuch unternommen - parallel lässt der Minecraft-Server weiterlaufen.
+        </Notice>
+      )}
+
+      {phaseRunning && (
+        <Notice kind="info">
+          <strong>Welt wird gestartet …</strong>
+          <div style={{ marginTop: 4 }}>{phaseLabels[state.failover.phase] ?? state.failover.message}</div>
         </Notice>
       )}
 
@@ -175,6 +230,13 @@ export default function Dashboard(): React.JSX.Element {
               : 'Noch kein Backup erstellt'
           }
         />
+        <StatTile
+          label="Koordination"
+          icon="📡"
+          value={state.hubConnected ? 'verbunden' : 'getrennt'}
+          tone={state.hubConnected ? 'accent' : state.hubError ? 'danger' : 'warn'}
+          sub={state.hubConnected ? 'Lease-Verwaltung aktiv' : (state.hubError ?? 'Neuverbindungsversuch läuft')}
+        />
       </div>
 
       <div className="grid grid-2" style={{ marginBottom: 14 }}>
@@ -193,6 +255,35 @@ export default function Dashboard(): React.JSX.Element {
             <dt>Replikate</dt>
             <dd>{state.world?.replicaIds.length ?? 0}</dd>
           </dl>
+
+          {addresses.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <div className="stat-label" style={{ marginBottom: 5 }}>
+                Server-Adresse (für Spieler)
+              </div>
+              <div className="row wrap" style={{ gap: 6 }}>
+                {addresses.map((a) => (
+                  <span className="code-block" key={a} style={{ fontSize: 12, padding: '6px 10px' }}>
+                    {a}
+                  </span>
+                ))}
+              </div>
+              <div className="help" style={{ marginTop: 5 }}>
+                Diese Adresse gehört zum aktuellen Host. Nach einem Host-Wechsel ändert sie sich –
+                für eine feste Adresse bitte DNS oder ein VPN einrichten.
+                {addresses.length > 0 &&
+                  addresses.every((a) => a.startsWith('192.168.') || a.startsWith('10.') || a.startsWith('172.16.')) && (
+                    <div>
+                      Es werden nur lokale Adressen angezeigt. Freunde aus einem anderen Heimnetzwerk
+                      erreichen den Server nur, wenn der Server-Port ({state.settings.serverPort}) am
+                      Router des Hosts als Port-Weiterleitung eingerichtet ist und die
+                      Windows-Firewall Java erlaubt - beides kann Multi-Mine Host nicht automatisch
+                      für Sie erledigen.
+                    </div>
+                  )}
+              </div>
+            </div>
+          )}
 
           <div style={{ marginTop: 14 }}>
             <div className="stat-label" style={{ marginBottom: 6 }}>

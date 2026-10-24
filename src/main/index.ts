@@ -168,6 +168,17 @@ function registerIpc(service: AppService): void {
   })
   handle(IPC.worldCheck, () => service.checkWorld())
   handle(IPC.worldManifest, () => service.currentManifest())
+  handle(IPC.worldPickFolder, async () => {
+    // Ordnerauswahl im Hauptprozess - der Renderer bekommt keinen
+    // Zugriff auf das Dateisystem.
+    const result = await dialog.showOpenDialog({
+      title: 'Minecraft-Weltordner auswählen',
+      properties: ['openDirectory'],
+      buttonLabel: 'Auswählen'
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0] ?? null
+  })
 
   handle(IPC.backupList, () => service.listBackups())
   handle(IPC.backupCreate, (kind: never) => service.createBackup(((kind as string) ?? 'manual') as never))
@@ -175,6 +186,7 @@ function registerIpc(service: AppService): void {
   handle(IPC.backupVerify, () => service.listBackups())
 
   handle(IPC.failoverTakeover, () => service.requestTakeover())
+  handle(IPC.worldStart, () => service.startWorld())
 
   handle(IPC.diagnosticsReport, (): DiagnosticsReport => {
     const state: AppState = service.getState()
@@ -195,6 +207,7 @@ function registerIpc(service: AppService): void {
     }
   })
   handle(IPC.hubEmbeddedAddress, () => service.embeddedHubAddress())
+  handle(IPC.serverAddresses, () => service.serverAddresses())
   handle(IPC.updateCheck, () => service.checkForUpdates())
   handle(IPC.updateDownload, (asset: never, sha: never) =>
     new UpdateManager({

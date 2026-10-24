@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useApp, formatRelative } from '../state'
 import { Card, CopyField, Empty, Field, Modal, Notice, Pill } from '../components/ui'
+import { encodeInviteLink, parseInviteLink } from '@shared/protocol'
 import type { InviteInfo } from '@shared/protocol'
 
 /**
@@ -39,7 +40,6 @@ export default function GroupPage(): React.JSX.Element {
       if (result.ok) {
         notify('Gruppe erstellt', 'ok')
         setMode('none')
-        await api.updateSettings({ hubAddress: hubAddress.trim() })
       } else {
         notify(result.error ?? 'Erstellen fehlgeschlagen', 'error')
       }
@@ -59,7 +59,6 @@ export default function GroupPage(): React.JSX.Element {
       if (result.ok) {
         notify('Gruppe beigetreten', 'ok')
         setMode('none')
-        await api.updateSettings({ hubAddress: hubAddress.trim() })
       } else {
         notify(result.error ?? 'Beitritt fehlgeschlagen', 'error')
       }
@@ -193,7 +192,32 @@ export default function GroupPage(): React.JSX.Element {
                           )}
                         </div>
                       </div>
-                      {!inv.revoked && <div className="code-block">{inv.code}</div>}
+                      {!inv.revoked && state.group && (
+                        <div className="code-block">
+                          {inv.code}
+                          {(() => {
+                            const hub =
+                              state.group?.hubAddress || state.settings.hubAddress || ''
+                            if (!hub) return null
+                            return (
+                              <div className="col" style={{ gap: 6, marginTop: 8 }}>
+                                <div className="small faint">
+                                  Kompletter Einladungslink (Hub + Gruppe + Code in einem Text -
+                                  der Empfänger benötigt nur diesen):
+                                </div>
+                                <CopyField
+                                  label=""
+                                  value={encodeInviteLink({
+                                    hubAddress: hub,
+                                    groupId: state.group.groupId,
+                                    inviteCode: inv.code
+                                  })}
+                                />
+                              </div>
+                            )
+                          })()}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -294,15 +318,52 @@ export default function GroupPage(): React.JSX.Element {
         >
           <Field
             label="Adresse des Koordinationsdienstes"
-            help="Multiaddr des Hubs, z. B. /ip4/192.168.1.20/tcp/4001/p2p/12D3Koo…"
+            help={
+              mode === 'create'
+                ? 'Leer lassen = eigener Koordinationsdienst auf diesem PC. Oder die Multiaddr eines externen Hubs eintragen.'
+                : 'Einladungslink einfügen (MMH-INV:…) oder die Multiaddr des Hubs, z. B. /ip4/192.168.1.20/tcp/4001/p2p/12D3Koo…'
+            }
           >
             <input
               type="text"
               value={hubAddress}
-              placeholder={embedded ?? '/ip4/127.0.0.1/tcp/4001/p2p/…'}
-              onChange={(e) => setHubAddress(e.target.value)}
+              placeholder={mode === 'create' ? (embedded ?? 'Leer = auf diesem PC erstellen') : embedded ?? '/ip4/127.0.0.1/tcp/4001/p2p/…'}
+              onChange={(e) => {
+                const value = e.target.value
+                const parsed = parseInviteLink(value)
+                if (parsed) {
+                  setHubAddress(parsed.hubAddress)
+                  setGroupId(parsed.groupId)
+                  setInviteCode(parsed.inviteCode)
+                  notify('Einladungslink erkannt: Hub, Gruppe und Code übernommen', 'ok')
+                  return
+                }
+                setHubAddress(value)
+              }}
             />
           </Field>
+
+          {mode !== 'create' && (
+            <Field label="Einladungslink oder Einladungscode + Gruppen-ID">
+              <input
+                type="text"
+                value={inviteCode}
+                onChange={(e) => {
+                  const value = e.target.value
+                  const parsed = parseInviteLink(value)
+                  if (parsed) {
+                    setHubAddress(parsed.hubAddress)
+                    setGroupId(parsed.groupId)
+                    setInviteCode(parsed.inviteCode)
+                    notify('Einladungslink erkannt: Hub, Gruppe und Code übernommen', 'ok')
+                    return
+                  }
+                  setInviteCode(value)
+                }}
+                placeholder="MMH-INV:… oder MMH-XXXX-XXXX-XXXX"
+              />
+            </Field>
+          )}
 
           {embedded && (
             <CopyField label="Adresse des eingebetteten Hubs" value={embedded} />
@@ -335,14 +396,6 @@ export default function GroupPage(): React.JSX.Element {
                   placeholder="UUID der Gruppe"
                 />
               </Field>
-              <Field label="Einladungscode">
-                <input
-                  type="text"
-                  value={inviteCode}
-                  onChange={(e) => setInviteCode(e.target.value)}
-                  placeholder="MMH-XXXX-XXXX-XXXX"
-                />
-              </Field>
             </>
           )}
 
@@ -352,7 +405,10 @@ export default function GroupPage(): React.JSX.Element {
             </button>
             <button
               className="btn primary"
-              disabled={busy || !hubAddress.trim()}
+              disabled={
+                busy ||
+                (mode === 'create' ? !hubAddress.trim() && !embedded : !hubAddress.trim() || !inviteCode.trim() || !groupId.trim())
+              }
               onClick={() => void (mode === 'create' ? createGroup() : joinGroup())}
             >
               {busy ? 'Wird ausgeführt…' : mode === 'create' ? 'Gruppe erstellen' : 'Beitreten'}

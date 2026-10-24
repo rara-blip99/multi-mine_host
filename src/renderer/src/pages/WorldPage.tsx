@@ -227,13 +227,25 @@ export default function WorldPage(): React.JSX.Element {
             Die Welt wird kopiert und im Weltspeicher abgelegt. Vor dem ersten Serverstart prüft
             Multi-Mine Host, ob die Welt zur konfigurierten Minecraft-Version passt.
           </Notice>
-          <Field label="Pfad zum Weltordner">
-            <input
-              type="text"
-              value={sourcePath}
-              placeholder="C:\Minecraft\server\world"
-              onChange={(e) => setSourcePath(e.target.value)}
-            />
+          <Field label="Pfad zum Weltordner" help="Der Ordner, der level.dat enthält.">
+            <div className="row" style={{ gap: 8 }}>
+              <input
+                type="text"
+                value={sourcePath}
+                placeholder="C:\Minecraft\server\world"
+                onChange={(e) => setSourcePath(e.target.value)}
+              />
+              <button
+                className="btn small"
+                onClick={() => {
+                  void api.pickWorldFolder().then((folder) => {
+                    if (folder) setSourcePath(folder)
+                  })
+                }}
+              >
+                Durchsuchen
+              </button>
+            </div>
           </Field>
           <Field label="Name in der App" help="Ordner, unter dem die Welt abgelegt wird.">
             <input

@@ -7,6 +7,7 @@ import { HubClient } from '../src/main/hub/hub-client'
 import { IdentityStore } from '../src/main/security/identity'
 import { createPeerNode } from '../src/main/net/transport'
 import { measureNetworkSpeed } from '../src/main/net/speed-test'
+import { LeaseClient } from '../src/main/host/lease-client'
 import type { PeerNode } from '../src/main/net/transport'
 import type { InviteInfo } from '../src/shared/protocol'
 import type {
@@ -250,6 +251,84 @@ describe('Integration: echtes Netzwerk', () => {
     const peerB = discovery.peers.find((p) => p.nodeId === b.identity.nodeId)
     expect(peerB?.peerId).toBe(b.client.peerId)
   }, 90_000)
+
+  it('fährt den Lease-Client gegen einen echten Hub', async () => {
+    const hub4 = new HubNode({
+      listen: ['/ip4/127.0.0.1/tcp/0'],
+      token: null,
+      dataFile: join(mkdtempSync(join(tmpdir(), 'mmh-hub4-')), 'hub.json')
+    })
+    await hub4.start()
+    const address = `${hub4.addresses.find((a) => a.includes('/ip4/127.0.0.1/tcp/'))}/p2p/${hub4.peerId}`
+
+    const client = await makeClient('PC-D', address)
+    try {
+      const groupId = 'gruppe-lease-client'
+      const created = await client.client.call<{
+        kind: 'group'
+        snapshot: GroupSnapshot
+        sessionToken: string
+      }>('hub.create', {
+        groupId,
+        name: 'Lease-Client-Test',
+        displayName: client.identity.displayName,
+        publicKey: client.identity.publicKeyBase64,
+        peerId: client.client.peerId
+      })
+      client.client.setSession(created.sessionToken, groupId)
+
+      // Der Lease-Client muss die Hüllen-Antwort des Hubs korrekt verarbeiten.
+      const leaseClient = new LeaseClient({
+        call: (type, payload, timeout) => client.client.call(type, payload, timeout),
+        groupId,
+        nodeId: client.identity.nodeId,
+        onFence: () => undefined
+      })
+
+      const acquired = await leaseClient.acquire(50)
+      expect(acquired.granted).toBe(true)
+      expect(acquired.lease?.epoch).toBe(1)
+      expect(acquired.lease?.holderId).toBe(client.identity.nodeId)
+
+      // Verlängern muss funktionieren, ohne den Host zu fenced'en.
+      const renewed = await leaseClient.renew()
+      expect(renewed.ok).toBe(true)
+      expect(renewed.fenced).toBe(false)
+      expect(leaseClient.fenced).toBe(false)
+      expect(leaseClient.epoch).toBe(1)
+
+      // Ein zweiter Versuch desselben Mitglieds erneuert die Lease
+      // (mit neuer Epoche) - das ist gewollt.
+      const second = await leaseClient.acquire(50)
+      expect(second.granted).toBe(true)
+      expect(second.lease?.epoch).toBe(2)
+
+      // Ein anderes Mitglied darf die Lease NICHT bekommen.
+      const other = await makeClient('PC-E', address)
+      try {
+        // Der Beitritt mit einem falschen Einladungscode muss scheitern.
+        await expect(
+          other.client.call('hub.join', {
+            groupId,
+            inviteCode: 'MMH-ABCD-EFGH-JKLM',
+            displayName: other.identity.displayName,
+            publicKey: other.identity.publicKeyBase64,
+            peerId: other.client.peerId,
+            capability: capability(other.identity.nodeId)
+          })
+        ).rejects.toThrow()
+      } finally {
+        await other.client.close()
+        await other.node.stop()
+        rmSync(other.dir, { recursive: true, force: true })
+      }
+    } finally {
+      await client.client.close()
+      await client.node.stop()
+      rmSync(client.dir, { recursive: true, force: true })
+      await hub4.stop()
+    }
+  }, 60_000)
 
   it('misst die Netzwerkqualität zum Hub', async () => {
     const hub3 = new HubNode({

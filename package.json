@@ -19,6 +19,7 @@
     "test:watch": "vitest",
     "icon": "node scripts/make-icon.mjs",
     "smoke:minecraft": "tsx scripts/smoke-minecraft.ts",
+    "smoke:failover": "tsx scripts/smoke-failover.ts",
     "smoke:hub": "tsx scripts/inspect-leveldat.ts",
     "hub": "tsx hub/main.ts",
     "hub:built": "node out/main/hub.mjs",

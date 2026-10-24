@@ -191,7 +191,7 @@ export default function SettingsPage(): React.JSX.Element {
           </Field>
           <Field
             label="Adresse des Koordinationsdienstes"
-            help="Multiaddr des Hubs. Nur eine Adresse im Netzwerk benötigt Port-Weiterleitung."
+            help="Multiaddr des Hubs. Leer = eigener Koordinationsdienst auf diesem PC (wenn aktiv)."
           >
             <input
               type="text"
@@ -200,15 +200,22 @@ export default function SettingsPage(): React.JSX.Element {
               onChange={(e) => update({ hubAddress: e.target.value })}
             />
           </Field>
+          <Switch
+            label="Eingebauter Koordinationsdienst"
+            description="Startet automatisch beim Programmstart. Für die erste Gruppe ist das die einfachste Lösung - später kann der ganze Freundeskreis auf einen Hub auf einem PC wechseln."
+            checked={s.embeddedHubEnabled}
+            onChange={(v) => update({ embeddedHubEnabled: v })}
+          />
           <Field
-            label="Eingebetteter Hub (Port)"
-            help="0 = aus. Auf 0 gesetzt startet dieser PC einen eigenen Koordinationsdienst."
+            label="Port des eingebauten Hubs"
+            help="0 = freien Port automatisch wählen (erforderlich für einen Zufallsport)."
           >
             <input
               type="number"
               min={0}
               max={65535}
               value={s.embeddedHubPort}
+              placeholder="0"
               onChange={(e) => update({ embeddedHubPort: Number(e.target.value) })}
             />
           </Field>

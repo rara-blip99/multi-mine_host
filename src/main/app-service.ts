@@ -19,7 +19,7 @@ import type {
 } from '@shared/types'
 import type { InviteInfo, PeerDiscoveryInfo } from '@shared/protocol'
 import { AtomicStore, Journal } from './core/atomic-store'
-import { Paths } from './core/paths'
+import { Paths, localIPv4Addresses } from './core/paths'
 import { appVersion } from './core/app-info'
 import { logger } from './core/logger'
 import { identityStore } from './security/identity'
@@ -86,6 +86,8 @@ export class AppService {
   private perf: PerformanceMonitor
 
   private heartbeatTimer: NodeJS.Timeout | null = null
+  private reconnectTimer: NodeJS.Timeout | null = null
+  private migratedFromDefaults = false
   private backupTimer: NodeJS.Timeout | null = null
   private perfTimer: NodeJS.Timeout | null = null
   private networkTimer: NodeJS.Timeout | null = null
@@ -149,12 +151,11 @@ export class AppService {
   // Start / Stopp
   // -------------------------------------------------------------------------
 
-  async start(): Promise<void> {
-    if (this.started) return
+  async start(): Promise<void> {    if (this.started) return
     this.started = true
     Paths.ensureAll()
 
-    const settings = this.settingsStore.load()
+    const settings = this.migrateSettings(this.settingsStore.load())
     this.backups = new BackupManager({
       backupsDir: settings.backupsDir,
       retention: settings.backupRetention,
@@ -170,9 +171,19 @@ export class AppService {
       server: { ...defaultServerStatus(), mcVersion: settings.mcVersion, ramLimitBytes: settings.serverRamBytes }
     })
 
-    // Eingebetteten Hub starten (falls konfiguriert)
-    if (settings.embeddedHubPort > 0) {
+    // Eingebetteten Hub starten (falls aktiv; Port 0 = Zufallsport)
+    if (settings.embeddedHubEnabled) {
       await this.startEmbeddedHub(settings.embeddedHubPort)
+    }
+    // Falls die Migration tatbestaendlich war: einmalig persistieren.
+    if (this.migratedFromDefaults) {
+      this.migratedFromDefaults = false
+      try {
+        await this.settingsStore.save(settings)
+        logger.info('app', 'Einstellungen auf aktuelles Schema migriert')
+      } catch (err) {
+        logger.warn('app', 'Migrierte Einstellungen konnten nicht gespeichert werden', { error: String(err) })
+      }
     }
 
     const session = this.session
@@ -210,6 +221,17 @@ export class AppService {
   // Hub
   // -------------------------------------------------------------------------
 
+  /**
+   * Ergaenzt fehlende Einstellungsfelder mit Defaults (Migration bei
+   * Installationen aus frueheren Versionen).
+   */
+  private migrateSettings(raw: AppSettings): AppSettings {
+    const defaults = defaultSettings()
+    const merged: AppSettings = { ...defaults, ...raw }
+    this.migratedFromDefaults = JSON.stringify(raw) !== JSON.stringify(merged)
+    return merged
+  }
+
   private async startEmbeddedHub(port: number): Promise<void> {
     try {
       const token = this.state.settings.embeddedHubToken || keystore.ensureToken('embedded-hub-token')
@@ -225,7 +247,6 @@ export class AppService {
       logger.error('app', 'Eingebetteter Hub konnte nicht gestartet werden', { error: String(err) })
     }
   }
-
   /** Adresse des eingebetteten Hubs (fuer die Anzeige in der Oberflaeche). */
   embeddedHubAddress(): string | null {
     if (!this.embeddedHub) return null
@@ -286,7 +307,15 @@ export class AppService {
     groupName: string,
     hubToken?: string
   ): Promise<{ group: GroupInfo; invites: InviteInfo[] }> {
-    await this.connectHub(hubAddress)
+    // Ohne ausdrueckliche Adresse wird der eingebaute Hub genutzt - so
+    // funktioniert "Gruppe erstellen" mit einem Klick.
+    const address = hubAddress || this.embeddedHubAddress() || this.state.settings.hubAddress
+    if (!address) {
+      throw new Error(
+        'Keine Hub-Adresse verfuegbar. Aktiviere den eingebauten Hub oder gib die Adresse eines externen Hubs an.'
+      )
+    }
+    await this.connectHub(address)
     const hub = this.hub
     if (!hub) throw new Error('Keine Verbindung zum Hub')
 
@@ -299,6 +328,7 @@ export class AppService {
         displayName: this.identity.displayName,
         publicKey: this.identity.publicKeyBase64,
         peerId: hub.peerId,
+        hubAddress: address,
         ...(hubToken ? { hubToken } : {})
       }
     )
@@ -307,10 +337,14 @@ export class AppService {
     hub.setSession(result.sessionToken, snapshot.group.groupId)
     await this.saveSession({
       groupId: snapshot.group.groupId,
-      hubAddress,
+      hubAddress: address,
       sessionToken: result.sessionToken
     })
     await this.afterSnapshot(snapshot)
+    // Die Hub-Adresse bleibt im Einstellungsspeicher erhalten, damit
+    // Freunde beim naechsten Start wieder eine funktionierende
+    // Koordination haben und der Einladungslink aufgebaut werden kann.
+    await this.updateSettings({ hubAddress: address })
     const invites = await hub.call<{ kind: 'invites'; invites: InviteInfo[] }>('hub.listInvites', {
       groupId: snapshot.group.groupId
     })
@@ -344,6 +378,7 @@ export class AppService {
     hub.setSession(result.sessionToken, groupId)
     await this.saveSession({ groupId, hubAddress, sessionToken: result.sessionToken })
     await this.afterSnapshot(snapshot)
+    await this.updateSettings({ hubAddress })
     return snapshot.group
   }
 
@@ -473,11 +508,61 @@ export class AppService {
       )
       await this.peers?.updatePeers(discovery.peers)
 
+      // Echtzeit-Spielerzahl per Server-List-Ping (wird sonst nur aus
+      // den Server-Logs geschaetzt - der SLP-Ping ist die verlaessliche
+      // Quelle und aktualisiert das Dashboard mit echten Zahlen).
+      if (this.server?.isRunning) {
+        try {
+          await this.server.refreshPlayers()
+          const status = this.server.status()
+          this.patch({ server: { ...this.state.server, ...status } })
+        } catch (err) {
+          logger.debug('app', 'SLP-Abfrage fehlgeschlagen', { error: String(err) })
+        }
+      }
+
       this.checkFailoverConditions(result.snapshot)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       logger.debug('app', 'Heartbeat fehlgeschlagen', { error: message })
       this.patch({ hubConnected: false, hubError: message })
+      this.scheduleReconnect()
+    }
+  }
+
+  /**
+   * Plant einen Neuverbindungsversuch, wenn der Hub nicht erreichbar ist.
+   * So kommt die Anwendung nach einem Hub-Restart oder Router-Reset
+   * von selbst zurueck, ohne dass der Benutzer etwas tun muss.
+   */
+  private scheduleReconnect(delayMs = 10_000): void {
+    if (this.reconnectTimer) return
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      void this.reconnectHub()
+    }, delayMs)
+  }
+
+  private async reconnectHub(): Promise<void> {
+    const groupId = this.session.groupId
+    const hubAddress = this.session.hubAddress
+    if (!hubAddress || !groupId || !this.started) return
+    if (this.hub?.connected) return
+    try {
+      try {
+        await this.hub?.close()
+      } catch {
+        /* ignore */
+      }
+      this.hub = null
+      await this.connectHub(hubAddress, groupId, this.session.sessionToken)
+      this.patch({ hubConnected: true, hubError: null })
+      logger.info('app', 'Verbindung zum Hub wiederhergestellt')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.patch({ hubConnected: false, hubError: message })
+      // Solidarisch: weiter versuchen (max. alle 15 s).
+      this.scheduleReconnect(15_000)
     }
   }
 
@@ -661,15 +746,20 @@ export class AppService {
       lease: snapshot.lease,
       world: snapshot.world
     })
-    const capabilities = snapshot.members.map((m) => {
-      const known = this.state.capabilities.find((c) => c.nodeId === m.nodeId)
-      if (known) return { ...known, hostingAllowed: m.hostingAllowed, priority: m.hostingPriority, displayName: m.displayName }
-      return null
-    })
-    const valid = capabilities.filter((c): c is HostCapability => c !== null)
-    if (valid.length > 0) {
-      this.patch({ capabilities: valid })
-      this.patch({ scores: this.computeScores(valid) })
+    // Der Hub verteilt die Leistungsdaten aller Mitglieder - damit kann jeder
+    // dieselbe Bewertung berechnen.
+    if (snapshot.capabilities.length > 0) {
+      const capabilities = snapshot.capabilities.map((c) => {
+        const member = snapshot.members.find((m) => m.nodeId === c.nodeId)
+        return {
+          ...c,
+          hostingAllowed: member?.hostingAllowed ?? c.hostingAllowed,
+          priority: member?.hostingPriority ?? c.priority,
+          displayName: member?.displayName ?? c.displayName
+        }
+      })
+      this.patch({ capabilities })
+      this.patch({ scores: this.computeScores(capabilities) })
     }
     await this.saveSession({})
   }
@@ -734,6 +824,10 @@ export class AppService {
 
   /** Startet den Minecraft-Server (nur wenn die Lease gehalten wird). */
   async startServer(force = false): Promise<{ ok: boolean; error?: string }> {
+    // Der Server läuft bereits -> nichts zu tun.
+    if (this.server && this.server.status().state === 'running') {
+      return { ok: true }
+    }
     if (!this.server) {
       const prepared = await this.prepareServer()
       if (!prepared.ok) return prepared
@@ -967,6 +1061,16 @@ export class AppService {
     })
 
     if (!target) {
+      const reasons = this.state.members
+        .filter((m) => m.nodeId !== this.identity.nodeId)
+        .map(
+          (m) =>
+            `${m.nodeId}(${m.displayName}): online=${m.online}, capability=${this.state.capabilities.find((c) => c.nodeId === m.nodeId) ? 'ja' : 'nein'}, peer=${peers.peer(m.nodeId) ? 'ja' : 'nein'}`
+        )
+      logger.warn('app', 'Kein Mitglied für Backup-Replikation geeignet', {
+        neededBytes: needed,
+        candidates: reasons.join('; ') || 'keine anderen Mitglieder'
+      })
       return {
         ok: false,
         error: 'Kein passendes Mitglied für die Replikation gefunden (offline oder zu wenig Speicherplatz)'
@@ -1058,10 +1162,11 @@ export class AppService {
     }
 
     // Es ist ueberhaupt kein Host bestimmt. Dann uebernimmt ein Mitglied,
-    // sofern es hostingfaehig ist und es eine Welt zu hosten gibt.
+    // sofern es hostingfaehig ist. Es ist auch ok, wenn noch keine Welt
+    // registriert ist: Der erste Host beginnt mit seiner (möglicherweise
+    // neu angelegten oder lokal importierten) Welt.
     if (!lease) {
       if (!this.state.settings.hostingAllowed) return
-      if (!this.state.world) return
       void this.attemptTakeover(null)
       return
     }
@@ -1289,7 +1394,21 @@ export class AppService {
     if (!hub || !groupId) return { ok: false, reason: 'Keine Verbindung zum Hub', warnings }
 
     if (!world) {
-      // Kein bekannter Weltstand - es kann eine frische Welt erzeugt werden.
+      // Kein bekannter Weltstand im Hub. Wenn lokal bereits eine Welt
+      // vorliegt (z. B. gerade importiert), wird sie verwendet - sonst
+      // erzeugt der Server eine frische Welt.
+      const localInfo = readWorldInfo(this.worldPath())
+      if (localInfo && localInfo.dataVersion > 0) {
+        this.patch({
+          failover: {
+            ...this.state.failover,
+            phase: 'starting',
+            updatedAt: Date.now(),
+            message: 'Welt wird lokal bereitgestellt (noch ohne Eintrag im Hub)'
+          }
+        })
+        return { ok: true, reason: 'Lokale Welt ohne Hub-Eintrag', warnings }
+      }
       this.patch({
         failover: {
           ...this.state.failover,
@@ -1516,6 +1635,70 @@ export class AppService {
     return this.attemptTakeover(lease)
   }
 
+  /**
+   * Ein-Klick-Start: Alles, was benoetigt wird, um eine Welt zu hosten.
+   *
+   * 1. Konfiguration und Gruppe pruefen (klare Fehlermeldung, wenn nichts
+   *    eingerichtet ist)
+   * 2. Verbindung zum Hub sicherstellen (automatischer Neuverbindungsversuch)
+   * 3. Host-Lease erwerben, falls wir sie noch nicht halten (Winners
+   *    koennen die Welt beschreiben, Verlierer blockiert)
+   * 4. Welt bereitstellen (lokal, vom Host, aus Backup oder neu)
+   * 5. Minecraft-Server starten (idempotent, mit Bereitschaftscheck)
+   *
+   * Der Ablauf nutzt dieselben Mechanismen wie das Failover - es entsteht
+   * kein zweiter Synchronisationspfad.
+   */
+  async startWorld(): Promise<{ ok: boolean; error?: string }> {
+    const myId = this.identity.nodeId
+
+    // 1) Konfiguration und Gruppe
+    if (!this.session.groupId || !this.state.group) {
+      return {
+        ok: false,
+        error:
+          'Es ist noch keine Gruppe eingerichtet. Erstelle auf der Seite "Gruppe" eine neue Gruppe oder trete mit einem Einladungscode bei.'
+      }
+    }
+    if (!this.session.hubAddress && !this.state.settings.hubAddress) {
+      return {
+        ok: false,
+        error:
+          'Es ist keine Hub-Adresse bekannt. Auf dem eigenen PC muss der eingebaute Hub aktiv sein (Einstellungen), oder es ist die Adresse eines externen Hubs einzutragen.'
+      }
+    }
+
+    // 2) Hub-Verbindung
+    if (!this.hub?.connected) {
+      try {
+        await this.reconnectHub()
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        return {
+          ok: false,
+          error: `Der Koordinations-Hub ist nicht erreichbar (${message}). Ohne Hub kann keine Host-Lease veroeffentlicht werden - ein gleichzeitiges Schreiben mehrerer Hosts waere nicht auszuschliessen.`
+        }
+      }
+    }
+    if (!this.hub?.connected) {
+      return {
+        ok: false,
+        error: 'Der Koordinations-Hub ist nicht erreichbar - die Anwendung versucht es automatisch weiter. Bitte spaeter erneut versuchen.'
+      }
+    }
+
+    // 3) + 4) + 5) Lease, Welt und Server (ueber den bewaehrten Uebernahme-Pfad)
+    const holdingLease = this.state.lease?.holderId === myId
+    if (holdingLease) {
+      const start = await this.startServer(false)
+      if (!start.ok) return { ok: false, error: start.error }
+      return { ok: true }
+    }
+    const takeover = await this.attemptTakeover(this.state.lease)
+    if (!takeover.ok) return { ok: false, error: takeover.reason }
+    return { ok: true }
+  }
+
   // -------------------------------------------------------------------------
   // Einstellungen
   // -------------------------------------------------------------------------
@@ -1542,6 +1725,26 @@ export class AppService {
   setDisplayName(name: string): void {
     this.identity.setDisplayName(name)
     this.patch({ identity: this.identity.identity() })
+  }
+
+  /**
+   * Adresse, unter der der Minecraft-Server erreichbar ist.
+   *
+   * Wird in der Oberfläche angezeigt, damit Spieler wissen, wohin sie sich
+   * verbinden müssen. Nach einem Host-Wechsel ändert sich die Adresse.
+   */
+  serverAddresses(): string[] {
+    const port = this.state.settings.serverPort
+    const local = localIPv4Addresses()
+    const nodeAddrs = this.advertisedAddresses()
+    const hostPart = nodeAddrs
+      .map((a) => {
+        const match = /\/ip4\/([^/]+)/.exec(a)
+        return match?.[1]
+      })
+      .filter((a): a is string => !!a)
+    const unique = [...new Set([...local, ...hostPart])]
+    return unique.map((ip) => `${ip}:${port}`)
   }
 
   /** Journal-Einträge (Diagnose). */

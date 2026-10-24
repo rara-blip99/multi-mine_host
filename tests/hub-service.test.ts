@@ -361,8 +361,44 @@ describe('Hub-Koordination', () => {
     expect(hub2.leaseStatus(GROUP_ID, t0)?.holderId).toBe('owner')
   })
 
-  it('erkennt eine nodeId, die nicht zum Public Key passt (im Hub-Node)', () => {
-    // Die Prüfung selbst liegt in hub-node.ts; hier wird sichergestellt,
+  it('verteilt die Leistungsdaten aller Mitglieder', () => {
+    const hub = new HubService()
+    hub.createGroup('owner', 'key-owner', {
+      groupId: GROUP_ID,
+      name: 'Freunde',
+      displayName: 'Owner'
+    })
+    const code = hub.listInvites('owner', GROUP_ID)[0]?.code as string
+    hub.joinGroup(
+      'node-b',
+      'key-b',
+      { groupId: GROUP_ID, inviteCode: code, displayName: 'B', capability: capability('node-b') },
+      Date.now()
+    )
+
+    // Ohne weiteren Heartbeat gibt es nur die Daten aus der Anmeldung.
+    let snapshot = hub.snapshot(GROUP_ID)
+    expect(snapshot.capabilities.length).toBe(1)
+
+    const cap = capability('node-b', { priority: 77 })
+    hub.heartbeat('node-b', GROUP_ID, cap, ['/ip4/10.0.0.2/tcp/4001'], Date.now())
+    hub.heartbeat('owner', GROUP_ID, capability('owner'), ['/ip4/10.0.0.1/tcp/4001'], Date.now())
+    // Die Prioritaet wird vom Hub verwaltet (nicht aus dem Heartbeat uebernommen).
+    hub.setOwnPriority('node-b', GROUP_ID, 77)
+
+    snapshot = hub.snapshot(GROUP_ID)
+    expect(snapshot.capabilities.length).toBe(2)
+    const b = snapshot.capabilities.find((c) => c.nodeId === 'node-b')
+    expect(b?.priority).toBe(77)
+    expect(b?.cpu.logicalCores).toBe(8)
+
+    // Der Hub ist die Wahrheit ueber die Hosting-Freigabe.
+    hub.setMemberAllowed('owner', GROUP_ID, 'node-b', false)
+    snapshot = hub.snapshot(GROUP_ID)
+    expect(snapshot.capabilities.find((c) => c.nodeId === 'node-b')?.hostingAllowed).toBe(false)
+  })
+
+  it('erkennt eine nodeId, die nicht zum Public Key passt (im Hub-Node)', () => {    // Die Prüfung selbst liegt in hub-node.ts; hier wird sichergestellt,
     // dass der Hub den Public Key registriert.
     const hub = new HubService()
     hub.createGroup('owner', 'key-owner', {

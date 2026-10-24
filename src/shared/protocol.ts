@@ -391,3 +391,71 @@ export function signatureBody(req: {
     payload: req.payload
   })
 }
+
+// ---------------------------------------------------------------------------
+// Einladungslink (Hub-Adresse + Gruppe + Einladungscode in einem Text)
+// ---------------------------------------------------------------------------
+
+/**
+ * Kombiniert die drei Werte, die ein Freund benoetigt, in einem kopierbaren
+ * Text. So muss niemand die Hub-Multiaddr, die Gruppen-ID und den
+ * Einladungscode einzeln weitergeben oder eintippen.
+ *
+ * Format: `MMH-INV:<b64url(hub)>.<b64url(group)>.<b64url(code)>`
+ * - base64url ist zeichensicher fuer Chats, Notizen und URLs
+ * - der Einladungscode bleibt die kryptografische Schluesselkomponente
+ */
+export interface InviteBundle {
+  hubAddress: string
+  groupId: string
+  inviteCode: string
+}
+
+function bytesToB64Url(bytes: Uint8Array): string {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i] ?? 0
+    binary += String.fromCharCode(b)
+  }
+  const b64 = btoa(binary)
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function b64UrlToBytes(text: string): Uint8Array {
+  let b64 = text.replace(/-/g, '+').replace(/_/g, '/')
+  while (b64.length % 4 !== 0) b64 += '='
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
+export function encodeInviteLink(bundle: InviteBundle): string {
+  const encode = (text: string): string => bytesToB64Url(new TextEncoder().encode(text))
+  return [
+    'MMH-INV:',
+    encode(bundle.hubAddress),
+    '.',
+    encode(bundle.groupId),
+    '.',
+    encode(bundle.inviteCode)
+  ].join('')
+}
+
+export function parseInviteLink(text: string): InviteBundle | null {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('MMH-INV:')) return null
+  const payload = trimmed.slice('MMH-INV:'.length)
+  const parts = payload.split('.')
+  if (parts.length !== 3) return null
+  try {
+    const decode = (seg?: string): string => new TextDecoder().decode(b64UrlToBytes(seg ?? ''))
+    const hubAddress = decode(parts[0])
+    const groupId = decode(parts[1])
+    const inviteCode = decode(parts[2])
+    if (!hubAddress.startsWith('/') || !groupId || !inviteCode.startsWith('MMH-')) return null
+    return { hubAddress, groupId, inviteCode }
+  } catch {
+    return null
+  }
+}

@@ -124,6 +124,58 @@ describe('AppService (Rauchtest)', () => {
     }
   })
 
+  it('startet die Welt nicht ohne eingerichtete Gruppe und uebernimmt Nebenschauplaetze', async () => {
+    const root = newRoot()
+    const identity = new IdentityStore(join(root, 'identity.json'))
+    const service = new AppService({ identity, dataRoot: root })
+    await service.start()
+    try {
+      const result = await service.startWorld()
+      expect(result.ok).toBe(false)
+      expect(result.error).toContain('Gruppe')
+    } finally {
+      await service.stop()
+    }
+  })
+
+  it('migriert alte Einstellungen und aktiviert den eingebauten Hub', async () => {
+    const root = newRoot()
+    // Bestehende Installation: settings.json OHNE embeddedHubEnabled.
+    mkdirSync(join(root, 'state'), { recursive: true })
+    writeFileSync(
+      join(root, 'state', 'settings.json'),
+      JSON.stringify({
+        minecraftEdition: 'java',
+        mcVersion: '1.20.4',
+        serverRamBytes: 2 * 1024 * 1024 * 1024,
+        serverPort: 25570,
+        worldsDir: join(root, 'worlds'),
+        backupsDir: join(root, 'backups')
+      }),
+      'utf8'
+    )
+    const identity = new IdentityStore(join(root, 'identity.json'))
+    const service = new AppService({ identity, dataRoot: root })
+    await service.start()
+    try {
+      const state = service.getState()
+      expect(state.settings.embeddedHubEnabled).toBe(true)
+      // Der eingebaute Hub rendert auf einem zufaelligen Port und ist sofort verwendbar.
+      const address = service.embeddedHubAddress()
+      expect(address).toBeTruthy()
+      expect(address).toContain('/p2p/')
+      // Die migrierten Einstellungen wurden zurueckgeschrieben.
+      const persisted = JSON.parse(readFileSync(join(root, 'state', 'settings.json'), 'utf8')) as Record<
+        string,
+        unknown
+      >
+      expect(persisted.embeddedHubEnabled).toBe(true)
+      expect(persisted.serverPort).toBe(25570)
+    } finally {
+      await service.stop()
+    }
+  })
+
   it('verhindert den Start einer Welt mit inkompatibler Version', async () => {
     const root = newRoot()
     const source = newRoot()

@@ -49,6 +49,7 @@ export const IPC = {
   worldImport: 'world:import',
   worldCheck: 'world:check',
   worldManifest: 'world:manifest',
+  worldPickFolder: 'world:pick-folder',
 
   backupList: 'backup:list',
   backupCreate: 'backup:create',
@@ -56,9 +57,11 @@ export const IPC = {
   backupVerify: 'backup:verify',
 
   failoverTakeover: 'failover:takeover',
+  worldStart: 'world:start',
 
   diagnosticsReport: 'diagnostics:report',
   hubEmbeddedAddress: 'hub:embedded-address',
+  serverAddresses: 'server:addresses',
 
   updateCheck: 'update:check',
   updateDownload: 'update:download',
@@ -118,6 +121,7 @@ export interface MmhApi {
   importWorld(req: WorldImportRequest): Promise<OperationResult>
   checkWorld(): Promise<{ ok: boolean; problems: string[]; warnings: string[] }>
   worldManifest(): Promise<WorldManifest | null>
+  pickWorldFolder(): Promise<string | null>
 
   listBackups(): Promise<BackupInfo[]>
   createBackup(kind?: string): Promise<{ ok: boolean; info?: BackupInfo; error?: string }>
@@ -125,8 +129,10 @@ export interface MmhApi {
   verifyBackups(): Promise<BackupInfo[]>
 
   requestTakeover(): Promise<{ ok: boolean; reason: string }>
+  startWorld(): Promise<OperationResult>
   diagnostics(): Promise<DiagnosticsReport>
   embeddedHubAddress(): Promise<string | null>
+  serverAddresses(): Promise<string[]>
   checkForUpdates(): Promise<UpdateInfo>
   downloadUpdate(assetName: string, sha256: string): Promise<{ ok: boolean; path?: string; error?: string }>
 }

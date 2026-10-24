@@ -37,6 +37,24 @@ function baseDir(): string {
 /** Optionales Überschreiben des Basisverzeichnisses (Tests, portable Installation). */
 let rootOverride: string | null = null
 
+/**
+ * Ermittelt die lokalen IPv4-Adressen (ohne Loopback).
+ * Wird für die Anzeige der Server-Adresse verwendet.
+ */
+export function localIPv4Addresses(): string[] {
+  const { networkInterfaces } = require('node:os') as typeof import('node:os')
+  const out: string[] = []
+  for (const list of Object.values(networkInterfaces())) {
+    for (const entry of list ?? []) {
+      if (entry.family !== 'IPv4' && (entry.family as unknown as number) !== 4) continue
+      if (entry.internal) continue
+      if (entry.address.startsWith('169.254.')) continue
+      out.push(entry.address)
+    }
+  }
+  return out
+}
+
 export const Paths = {
   /** Basisverzeichnis fuer alle App-Daten. */
   root(): string {

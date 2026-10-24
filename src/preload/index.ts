@@ -51,6 +51,7 @@ const api = {
   importWorld: (req: WorldImportRequest) => ipcRenderer.invoke(IPC.worldImport, req),
   checkWorld: () => ipcRenderer.invoke(IPC.worldCheck),
   worldManifest: () => ipcRenderer.invoke(IPC.worldManifest),
+  pickWorldFolder: () => ipcRenderer.invoke(IPC.worldPickFolder),
 
   listBackups: () => ipcRenderer.invoke(IPC.backupList),
   createBackup: (kind = 'manual') => ipcRenderer.invoke(IPC.backupCreate, kind),
@@ -58,8 +59,10 @@ const api = {
   verifyBackups: () => ipcRenderer.invoke(IPC.backupVerify),
 
   requestTakeover: () => ipcRenderer.invoke(IPC.failoverTakeover),
+  startWorld: () => ipcRenderer.invoke(IPC.worldStart),
   diagnostics: () => ipcRenderer.invoke(IPC.diagnosticsReport),
   embeddedHubAddress: () => ipcRenderer.invoke(IPC.hubEmbeddedAddress),
+  serverAddresses: () => ipcRenderer.invoke(IPC.serverAddresses),
   checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),
   downloadUpdate: (assetName: string, sha256: string) =>
     ipcRenderer.invoke(IPC.updateDownload, assetName, sha256)

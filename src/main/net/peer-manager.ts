@@ -420,17 +420,19 @@ export class PeerManager {
 
       // Datei streamen
       const hash = createHash('sha256')
+      let sentBytes = 0
       await pipeline(
         createReadStream(archivePath, { highWaterMark: 256 * 1024 }),
         async function* (source) {
           for await (const chunk of source) {
             const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)
             hash.update(buf)
+            sentBytes += buf.byteLength
             await writeFrame(stream, frame(FRAME_FILE_DATA, buf), 16 * 1024 * 1024)
           }
         }
       )
-
+      logger.info('peer-manager', 'Backup-Daten gesendet', { sentBytes })
       const digest = hash.digest('hex')
       if (digest !== meta.sha256) {
         return { ok: false, error: 'Prüfsumme der gesendeten Datei stimmt nicht' }
@@ -453,20 +455,49 @@ export class PeerManager {
 
   /**
    * Nimmt ein repliziertes Backup entgegen.
+   *
+   * `preOffer` wird gesetzt, wenn das Angebot bereits vom eingehenden
+   * Protokoll-Handler gelesen wurde (handleIncoming hat den ersten Frame
+   * konsumiert). In diesem Fall MUSS auch der bereits laufende
+   * Frame-Iterator (`preIterator`) uebergeben werden: Ein zweiter
+   * Generator auf demselben Stream wuerde gepufferte Frames verlieren
+   * und die Pruefsumme unausweichlich verfaelschen.
    */
   async receiveBackup(
     stream: Stream,
-    targetDir: string
+    targetDir: string,
+    preOffer?: BackupOfferFrame,
+    preIterator?: AsyncGenerator<Uint8Array, void, unknown>
   ): Promise<{ ok: boolean; error?: string; sha256?: string }> {
-    const iterator = readFrames(stream)
-    const first = await iterator.next()
-    if (first.done || !first.value) return { ok: false, error: 'Kein Angebot empfangen' }
-    if (first.value[0] !== FRAME_CONTROL) return { ok: false, error: 'Unerwartetes Format' }
-
-    const offer = JSON.parse(new TextDecoder().decode(first.value.subarray(1))) as BackupOfferFrame
-    if (offer.type !== 'backup-offer') return { ok: false, error: 'Unerwartetes Format' }
+    let offer: BackupOfferFrame
+    let iterator: AsyncGenerator<Uint8Array, void, unknown>
+    if (preOffer && preIterator) {
+      iterator = preIterator
+      offer = preOffer
+    } else {
+      iterator = readFrames(stream)
+      const first = await iterator.next()
+      if (first.done || !first.value) return { ok: false, error: 'Kein Angebot empfangen' }
+      if (first.value[0] !== FRAME_CONTROL) return { ok: false, error: 'Unerwartetes Format' }
+      const parsed = JSON.parse(new TextDecoder().decode(first.value.subarray(1))) as BackupOfferFrame
+      if (parsed.type !== 'backup-offer') return { ok: false, error: 'Unerwartetes Format' }
+      offer = parsed
+    }
     if (offer.groupId !== this.opts.groupId) {
-      return { ok: false, error: 'Angebot gehört zu einer anderen Gruppe' }
+      // Anfrage aktiv ablehnen, damit der Sender nicht endlos auf die
+      // Bestaetigung wartet.
+      const reject = (payload: unknown): void => {
+        void writeFrame(
+          stream,
+          Buffer.concat([Buffer.from([FRAME_CONTROL]), Buffer.from(JSON.stringify(payload), 'utf8')])
+        ).catch(() => {
+          /* ignore */
+        })
+      }
+      const message = 'Angebot gehört zu einer anderen Gruppe'
+      reject({ type: 'backup-accept', ok: false, error: message })
+      void stream.close().catch(() => {})
+      return { ok: false, error: message }
     }
 
     // Der Dateiname wird streng geprueft (kein Pfad, keine Traversal).
@@ -485,6 +516,12 @@ export class PeerManager {
     }
 
     try {
+      // Bestaetigung SOFORT senden: der Sender streamt die Datei erst
+      // nach dieser Bestaetigung. Wuerde der Empfaenger erst nach dem
+      // Empfang der Datei antworten, wuerden beide ewig aufeinander
+      // warten (Deadlock wie im Failover-Test).
+      respond({ type: 'backup-accept', ok: true })
+
       mkdirSync(dirname(target), { recursive: true })
       const handle = openSync(partPath, 'w')
       const hash = createHash('sha256')
@@ -507,7 +544,6 @@ export class PeerManager {
       const digest = hash.digest('hex')
       if (digest !== offer.meta.sha256) {
         rmSync(partPath, { force: true })
-        respond({ type: 'backup-accept', ok: false, error: 'Prüfsumme stimmt nicht überein' })
         return { ok: false, error: 'Prüfsumme stimmt nicht überein' }
       }
 
@@ -529,7 +565,6 @@ export class PeerManager {
       }
       writeFileSync(`${target}.meta.json`, JSON.stringify(meta, null, 2), 'utf8')
 
-      respond({ type: 'backup-accept', ok: true })
       return { ok: true, sha256: digest }
     } catch (err) {
       try {
@@ -545,12 +580,17 @@ export class PeerManager {
 
   /**
    * Nimmt ein repliziertes Backup entgegen und legt es im Backup-Speicher ab.
+   *
+   * Der Offer-Frame wurde bereits von handleIncoming gelesen - Offer und
+   * der laufende Iterator werden durchgereicht, damit kein zweiter
+   * Frame-Reader auf demselben Stream Daten verliert.
    */
   private async handleBackupOffer(
     stream: Stream,
-    offer: BackupOfferFrame
+    offer: BackupOfferFrame,
+    iterator: AsyncGenerator<Uint8Array, void, unknown>
   ): Promise<void> {
-    const result = await this.receiveBackup(stream, this.opts.backupDir())
+    const result = await this.receiveBackup(stream, this.opts.backupDir(), offer, iterator)
     if (!result.ok) {
       logger.warn('peer-manager', 'Empfangenes Backup abgelehnt', { error: result.error })
     } else {
@@ -578,7 +618,7 @@ export class PeerManager {
         return
       }
       if ((parsed as unknown as BackupOfferFrame).type === 'backup-offer') {
-        await this.handleBackupOffer(stream, parsed as unknown as BackupOfferFrame)
+        await this.handleBackupOffer(stream, parsed as unknown as BackupOfferFrame, iterator)
         return
       }
       const request = parsed as WorldRequestFrame

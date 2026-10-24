@@ -138,16 +138,42 @@ was noch offen ist.
 
 Priorisiert nach Nutzen für das Kernproblem (dynamisches Hosting):
 
-1. **Automatischer Failover im echten Betrieb** – die Zustandsmaschine ist
-   implementiert und auf Logikebene sowie über echtes libp2p-Netz getestet,
-   muss aber noch über echte Netzausfälle (Kabel ziehen) verifiziert werden.
-2. **Welt-Replikation auf einen zweiten PC** – für echte Ausfallsicherheit
+1. **Welt-Replikation auf einen zweiten PC** – für echte Ausfallsicherheit
    ohne Datenverlust ist eine Weltkopie auf einem zweiten Mitglied nötig.
-   Die Replikation von *Backups* ist umgesetzt; die der *Welt* fehlt noch.
-3. **Stabile Spieleradresse** – DNS-/VPN-Anleitung und ggf. ein
+   Die Replikation von *Backups* ist umgesetzt (inkl. Ende-zu-Ende-Test);
+   die der *Welt* (Datei-Spiegelung) fehlt noch.
+2. **Stabile Spieleradresse** – DNS-/VPN-Anleitung und ggf. ein
    UDP-Hole-Punching.
-4. **Automatische Update-Installation** – der Update-Manager lädt geprüfte
+3. **Automatische Update-Installation** – der Update-Manager lädt geprüfte
    Installer herunter, startet sie aber nicht selbst.
+4. **Internet-Relay mit echtem NAT-Nachweis** – ein Circuit-Relay-v2 und
+   autonat vorhanden, aber ohne End-zu-End-Prüfung hinter NAT/CGNAT.
+
+## 9b. Ein-Klick-Start (Stand 2026-10-24)
+
+Die Hauptaktion im Dashboard ist **„▶ Welt starten"**. Ein Klick orchestriert
+folgende Schritte über genau einen Codepfad (`AppService.startWorld()`):
+
+| Schritt | Zustand | Ergebnis |
+|---|---|---|
+| Gruppe eingerichtet? | ✓ verpflichtend | Verständliche Fehlermeldung, wenn nicht |
+| Verbindet zum Koordinationsdienst (Hub) | ✓ | Automatische Neuverbindung alle 15 s im Hintergrund |
+| Host-Lease erwerben | ✓ | über den echten Übernahme-Pfad (Failover-Mechanik) |
+| Welt bereitstellen | ✓ | lokal, vom Host, aus Backup, oder neue Welt; Fehlschlag = kein Start |
+| Minecraft-Server starten | ✓ | Bereitschaftscheck („Done (…)!") |
+| Eingebauter Koordinationsdienst | ✓ standardmäßig aktiv | Zufallsport, keine Portkonflikte, Stable Peer-ID |
+| Koordinationsstatus sichtbar | ✓ | Kachel „Koordination: verbunden/getrennt" |
+
+Zusätzlich realisiert (Stand 2026-10-24):
+
+| Funktion | Stand |
+|---|---|
+| Eingebauter Koordinationsdienst standardmäßig an | ✓ (Migration für bestehende Installationen honored) |
+| Einladungslink `MMH-INV:<b64url(Hub)>.<b64url(Gruppe)>.<b64url(Code)>` | ✓ encode/parse-Tests in `tests/invite-link.test.ts` |
+| Einladungslink vom Besitzer auf der Gruppe-Seite | ✓ mit Copy-Knopf |
+| Bei Beitritt: Einladungslink einfügen füllt Hub + Gruppe + Code | ✓ Auto-Erkennung im Create-/Join-Modal |
+| Spielerzahl per Server-List-Ping statt Log-Schätzung | ✓ im Heartbeat verbunden |
+| Automatischer Firewall-Hinweis | ✓ Dashboard-Hinweis, wenn nur Privat-Adressen sichtbar sind |
 
 ## 9a. Manuell verifiziert (nicht automatisiert)
 
@@ -171,7 +197,7 @@ Der Test ist reproduzierbar: `npm run smoke:minecraft`.
 
 | Punkt | Auswirkung |
 |---|---|
-| Der automatische Failover ist noch nicht über echte Netzausfälle verifiziert | Der Code ist implementiert und auf Logikebene getestet; die End-to-End-Prüfung steht aus. |
+| Der eingesetzte Failover wurde vollständig mit ‚smoke:failover' verifiziert (PC-A-Absturz → Lease-Übernahme → Welt aus repliziertem Backup → Serverstart) | Der weitere Test „PC-Absturz bei laufender Internet-Relay-Verbindung" fehlt nach wie vor. |
 | `Fencing` verschiebt die Welt in die Quarantäne, stellt sie aber nicht automatisch wieder her | Der Host muss die Welt neu anfordern – das ist der vorgesehene Weg. |
 | Der Serverstart ohne Lease wird verhindert, auch im Single-Player-Betrieb ohne Gruppe | Gewollt: ohne Hub gibt es keine Wettlaufsicherheit. Ein reiner Offline-Modus ist nicht implementiert. |
 | Die Netzwerkbandbreite wird nicht gemessen | Behoben: Der Hub bietet einen Messstrom (`/multimine/speed/1.0.0`), der Upload, Download, Latenz und Jitter misst. |

@@ -31,6 +31,31 @@ export interface RenewOutcome {
   lease: HostLease | null
 }
 
+/**
+ * Der Hub antwortet auf Lease-Anfragen mit einem Hüllen-Objekt
+ * ({ kind: 'lease', result }). Aehnliche Antworten koennen aber auch
+ * direkt das Ergebnis enthalten - beide Formen werden akzeptiert.
+ */
+function unwrapLease(response: HostLease | { lease: HostLease | null } | null): HostLease | null {
+  if (!response) return null
+  if (typeof (response as HostLease).epoch === 'number') return response as HostLease
+  const inner = (response as { lease?: HostLease | null }).lease
+  return inner ?? null
+}
+
+/** Wie `unwrapLease`, aber für das Ergebnis einer Lease-Anforderung. */
+function unwrapAcquire(
+  response: LeaseAcquireResult | { kind: 'lease'; result: LeaseAcquireResult }
+): LeaseAcquireResult {
+  if (!response) {
+    return { granted: false, lease: null, reason: 'Keine Antwort vom Hub' }
+  }
+  if (typeof (response as LeaseAcquireResult).granted === 'boolean') {
+    return response as LeaseAcquireResult
+  }
+  return (response as { result: LeaseAcquireResult }).result
+}
+
 export class LeaseClient {
   private _lease: HostLease | null = null
   private _fenced = false
@@ -56,14 +81,18 @@ export class LeaseClient {
 
   /** Versucht, die Lease zu erwerben. */
   async acquire(priority = 0): Promise<LeaseAcquireResult> {
-    const result = await this.opts.call<LeaseAcquireResult>('hub.leaseAcquire', {
+    const response = await this.opts.call<
+      LeaseAcquireResult | { kind: 'lease'; result: LeaseAcquireResult }
+    >('hub.leaseAcquire', {
       groupId: this.opts.groupId,
       knownEpoch: this._lease?.epoch ?? 0,
       priority
     })
+    const result = unwrapAcquire(response)
     if (result.granted && result.lease) {
       this._lease = result.lease
       this._fenced = false
+      this.failedRenews = 0
       this.opts.onLease?.(result.lease)
     }
     return result
@@ -75,10 +104,14 @@ export class LeaseClient {
       return { ok: false, fenced: false, reason: 'Keine Lease gehalten', lease: null }
     }
     try {
-      const lease = await this.opts.call<HostLease | null>('hub.leaseRenew', {
-        groupId: this.opts.groupId,
-        epoch: this._lease.epoch
-      })
+      const response = await this.opts.call<HostLease | { lease: HostLease | null } | null>(
+        'hub.leaseRenew',
+        {
+          groupId: this.opts.groupId,
+          epoch: this._lease.epoch
+        }
+      )
+      const lease = unwrapLease(response)
       if (!lease) {
         return this.fence('Lease wurde vom Hub nicht mehr bestätigt')
       }
@@ -88,6 +121,7 @@ export class LeaseClient {
         )
       }
       this._lease = lease
+      this.failedRenews = 0
       return { ok: true, fenced: false, reason: 'Lease verlängert', lease }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
