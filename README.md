@@ -67,21 +67,27 @@ zweiter Host.
 
 ## Schnellstart
 
-### 1. Koordinationsdienst starten
+### 1. Koordinationsdienst
 
-Der Hub muss von allen Mitgliedern erreichbar sein. Auf einem dauerhaft
-verfügbaren Rechner (Raspberry Pi, Heimserver, PC eines Freundes, VPS):
+Es gibt zwei Betriebsarten:
 
-```bash
-MMH_HUB_PORT=4001 MMH_HUB_TOKEN=geheim npm run hub
-```
+- **Eingebauter Hub (Standard):** Die Anwendung startet automatisch einen
+  eigenen Koordinationsdienst (Zufallsport, in *Einstellungen* abschalt- und
+  konfigurierbar). Das genügt, um eine Gruppe im Heimnetzwerk anzulegen – es
+  muss nichts zusätzlich installiert werden.
+- **Standalone-Hub (empfohlen für dauerhafte Gruppen):** Auf einem Rechner,
+  der immer erreichbar ist (Raspberry Pi, Heimserver, PC eines Freundes, VPS):
 
-Der Hub gibt seine Adresse aus, z. B.:
+  ```bash
+  MMH_HUB_PORT=4001 MMH_HUB_TOKEN=geheim npm run hub
+  ```
 
-```
-Peer-ID : 12D3KooW...
-Adressen: /ip4/192.168.1.20/tcp/4001/p2p/12D3KooW...
-```
+  Der Hub gibt seine Adresse aus, z. B.:
+
+  ```
+  Peer-ID : 12D3KooW...
+  Adressen: /ip4/192.168.1.20/tcp/4001/p2p/12D3KooW...
+  ```
 
 ### 2. Anwendung installieren
 
@@ -90,24 +96,43 @@ Installer aus `npm run dist` verwenden.
 
 ### 3. Gruppe erstellen oder beitreten
 
-- **Erster PC:** Reiter *Gruppe* → *Gruppe erstellen* → Hub-Adresse eintragen →
-  Gruppe benennen. Es wird automatisch ein Einladungscode erzeugt.
-- **Weitere PCs:** Reiter *Gruppe* → *Gruppe beitreten* → Hub-Adresse,
-  Gruppen-ID und Einladungscode eintragen.
+- **Erster PC:** Reiter *Gruppe* → *Gruppe erstellen* → Gruppe benennen.
+  Bleibt die Hub-Adresse leer, wird der eingebaute Hub genutzt. Danach zeigt
+  der Besitzer pro Einladung den Code **und einen kompletten Einladungslink**.
+- **Weitere PCs:** Reiter *Gruppe* → *Gruppe beitreten* → den Einladungslink
+  in eines der Felder einfügen – Hub-Adresse, Gruppen-ID und Einladungscode
+  werden automatisch übernommen. Alternativ die drei Werte einzeln eintragen.
 
 Der Einladungscode hat das Format `MMH-XXXX-XXXX-XXXX` und kann am Telefon
 abgelesen werden. Er ist 60 Bit stark, hat ein optionales Ablaufdatum und eine
 optionale maximale Nutzungszahl. Er kann jederzeit widerrufen werden.
+
+Der Einladungslink kombiniert alle drei Werte in einem kopierbaren Text:
+
+```
+MMH-INV:<b64url(Hub-Adresse)>.<b64url(Gruppen-ID)>.<b64url(Einladungscode)>
+```
 
 ### 4. Welt bereitstellen
 
 Reiter *Welt* → *Welt importieren* → Pfad zum bestehenden Weltordner angeben
 (den Ordner, der `level.dat` enthält).
 
-### 5. Server starten
+### 5. Welt starten (Ein Klick)
 
-Reiter *Dashboard* → *Server starten*. Die Anwendung lädt beim ersten Mal die
-Paper-Server-Datei herunter (ca. 43 MB) und startet den Server.
+Reiter *Dashboard* → **▶ Welt starten**. Ein Klick orchestriert den gesamten
+Weg – über denselben Codepfad wie das automatische Failover:
+
+1. Hub-Verbindung sicherstellen (bei Verlust automatisch alle 15 s versucht),
+2. Host-Lease erwerben (dieselbe Lease-Logik wie bei einer Host-Übernahme),
+3. Welt bereitstellen (lokal, vom bisherigen Host, aus dem replizierten
+   Backup oder als neue Welt – bei Unsicherheit kein Start),
+4. Paper-Server herunterladen (nur beim ersten Mal, ca. 43 MB) und starten.
+
+Der Fortschritt wird im Dashboard angezeigt. Werden nur Adressen aus dem
+Heimnetzwerk angezeigt, weist die Oberfläche darauf hin, dass Spieler aus
+anderen Netzwerken eine Port-Weiterleitung oder ein VPN am Host brauchen –
+das kann die App nicht automatisch erledigen.
 
 ---
 
@@ -281,10 +306,12 @@ Hub kann eine Epoche vergeben, und er vergibt sie an genau ein Mitglied.
 
 ### Schritte
 
-1. Hub starten und Adresse notieren.
-2. Erster PC: *Gruppe → Gruppe erstellen* → Adresse + Name → Einladungscode wird
-   angezeigt.
-3. Weitere PCs: *Gruppe → Gruppe beitreten* → Adresse, Gruppen-ID, Code.
+1. Betriebsart wählen: eingebauter Hub (Standard) oder Standalone-Hub starten
+   und Adresse notieren.
+2. Erster PC: *Gruppe → Gruppe erstellen* → Name → Einladungscode und
+   Einladungslink (`MMH-INV:…`) werden angezeigt.
+3. Weitere PCs: *Gruppe → Gruppe beitreten* → Einladungslink einfügen (oder
+   Adresse, Gruppen-ID, Code einzeln).
 4. Der Besitzer kann im Reiter *Gruppe* Mitglieder entfernen, die Hosting-
    Freigabe entziehen und Einladungen widerrufen.
 
@@ -571,7 +598,9 @@ Protokolle liegen unter `%APPDATA%/multi-mine-host/logs/`. Der Reiter
 ## Tests
 
 ```bash
-npm test
+npm test                 # alle Unit- und Integrationstests
+npm run smoke:minecraft  # echter Paper-Server: JAR-Download, Start, SLP-Ping, Backup
+npm run smoke:failover   # echte Absturz-Simulation: Backup-Replikation, Lease-Übernahme, Restore
 ```
 
 Abgedeckte Bereiche:
@@ -590,7 +619,10 @@ Abgedeckte Bereiche:
 | Versionskonflikte, NBT-Leser | `tests/minecraft-versions.test.ts` |
 | Pfadschutz | `tests/path-guard.test.ts` |
 | Einladungscodes | `tests/invites.test.ts` |
+| Einladungslink (kodieren/parsen) | `tests/invite-link.test.ts` |
 | Framing | `tests/framing.test.ts` |
+| Backup-Replikation über echtes libp2p (Regressionstest für einen Deadlock) | `tests/integration-backup-replication.test.ts` |
+| Hub, Beitritt, Lease-Rennen über echtes Netzwerk | `tests/integration-network.test.ts` |
 
 Ein Testplan für mehrere echte Windows-PCs liegt in
 [docs/TESTPLAN.md](docs/TESTPLAN.md).

@@ -34,9 +34,11 @@ Erwartung: **alle Tests grün**, keine Warnungen im Typecheck.
 | `tests/minecraft-versions.test.ts` | Versionskonflikte, NBT-Leser |
 | `tests/path-guard.test.ts` | Path Traversal, Symlink-Escape |
 | `tests/invites.test.ts` | Einladungscodes, Ablauf, Widerruf |
+| `tests/invite-link.test.ts` | Einladungslink (Hub + Gruppe + Code), Kodieren/Parsen |
 | `tests/framing.test.ts` | Framing, Frame-Limits |
 | `tests/integration-network.test.ts` | **Echtes libp2p-Netz**: Hub + 2 Mitglieder |
-| `tests/app-service.test.ts` | **Rauchtest**: Welt importieren, Backup, Restore |
+| `tests/integration-backup-replication.test.ts` | **Echtes libp2p-Netz**: Backup-Replikation, Deadlock-Regression |
+| `tests/app-service.test.ts` | **Rauchtest**: Welt importieren, Backup, Restore, Ein-Klick-Prüfungen |
 
 ---
 
@@ -86,8 +88,9 @@ Erwartung: **alle Tests grün**, keine Warnungen im Typecheck.
 
 | Schritt | Erwartung |
 |---|---|
-| PC A: Hub-Adresse eintragen, Gruppe erstellen | Gruppen-ID und Einladungscode werden angezeigt |
-| PC B: mit Adresse, ID und Code beitreten | PC B erscheint in der Mitgliederliste von A |
+| PC A: Gruppe erstellen (Hub-Adresse leer lassen = eingebauter Hub) | Gruppe erscheint; Einladungscode und Einladungslink (`MMH-INV:…`) werden angezeigt |
+| PC B: Einladungslink in das Hub- oder Code-Feld einfügen | Hub-Adresse, Gruppen-ID und Code werden automatisch übernommen |
+| PC B: beitreten | PC B erscheint in der Mitgliederliste von A |
 | PC A: Mitgliederliste prüfen | Beide PCs online, Rollen korrekt |
 | PC B: versucht mit falschem Code beizutreten | Fehlermeldung, kein Beitritt |
 | PC A: Einladung widerrufen | Code funktioniert nicht mehr |
@@ -99,8 +102,8 @@ Erwartung: **alle Tests grün**, keine Warnungen im Typecheck.
 | Schritt | Erwartung |
 |---|---|
 | PC A: Wegwerf-Welt importieren | Erfolgreich, Integrität „in Ordnung" |
-| PC A: Server starten | Server startet, Konsole zeigt „Done (...s)!" |
-| Spieler verbinden | Spielerzahl in der Oberfläche stimmt |
+| PC A: **▶ Welt starten** (Dashboard-Hauptaktion, ein Klick) | Hub-Verbindung, Lease, Welt und Server in einem Schritt; Fortschritt wird angezeigt; Server zeigt „Done (...s)!" |
+| Spieler verbinden | Spielerzahl in der Oberfläche stimmt (Server-List-Ping) |
 | PC A: Welt im Editor ändern, PC A neu starten | Änderung ist vorhanden |
 
 ### T4 – Kontrollierter Host-Wechsel (der Kerntest)
