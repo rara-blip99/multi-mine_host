@@ -94,9 +94,19 @@ Der Hub prüft in dieser Reihenfolge:
 ### Geheimnisse
 
 Electron `safeStorage` (Windows: DPAPI, an den Benutzerkontext des OS
-gebunden). Ohne Electron (Hub-Standalone) wird auf AES-256-GCM mit einem
-lokale Schlüsseldatei zurückgefallen. In keinem Fall wird ein Geheimnis im
+gebunden). Ohne Electron (Hub-Standalone) wird auf AES-256-GCM mit einer
+lokalen Schlüsseldatei zurückgefallen. In keinem Fall wird ein Geheimnis im
 Klartext abgelegt.
+
+**Hub-Token vs. Hub-Zustand.** Das Hub-Token liegt ausschließlich im
+verschlüsselten Keystore (`keys/secrets.json`). Der Hub-Zustand
+(`state/hub-state.json`) enthält dagegen im Klartext die Einladungscodes
+und Sitzungstokens der Mitglieder - beides Bearer-Credentials, die nur
+gegenüber diesem Hub gültig sind (das eigene Sitzungstoken der Anwendung
+liegt ebenfalls im Keystore). Der Hub-Zustand wird deshalb im
+Anwendungsdaten-Verzeichnis des Benutzerprofils geführt; ein
+verschlüsselter Hub-Zustand ist eine mögliche künftige Verbesserung.
+Keine der beiden Dateien enthält private Schlüssel.
 
 ## 4. Zugriffskontrolle
 

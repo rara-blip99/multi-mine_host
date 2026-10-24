@@ -15,6 +15,7 @@ Nachweis – es werden **nur tatsächlich durchgeführte** Tests protokolliert.
 |---|---|---|---|---|---|
 | 2026-10-21 | `d683c62` | ✅ | ✅ 153 | ✅ | `npm run typecheck`, `npm test`, `npm run build` |
 | 2026-10-24 | vor Commit | ✅ | ✅ 164 | ✅ | + Backup-Replikation (2 Tests, echtes libp2p), Einladungslink (5 Tests), AppService-Ein-Klick-Pruefungen (2 Tests) |
+| 2026-10-24 | vor Commit | ✅ | ✅ 170 | ✅ | + Regression "Ungültiges Hub-Token"/eingebauter Hub (5 Tests in `tests/embedded-hub.test.ts`), Sitzungs-Wiederherstellung nach Hub-Neustart (1 Test in `tests/hub-service.test.ts`); dreifacher Wiederholungslauf stabil |
 
 Automatisierte Abdeckung: siehe [TESTPLAN.md](TESTPLAN.md).
 
@@ -25,6 +26,7 @@ Automatisierte Abdeckung: siehe [TESTPLAN.md](TESTPLAN.md).
 | Datum | Commit | Ergebnis | Anmerkung |
 |---|---|---|---|
 | 2026-10-21 | `d683c62` | ✅ bestanden | siehe unten |
+| 2026-10-24 | vor Commit | ✅ bestanden | Wiederholung nach dem Hub-Token-Fix |
 
 Ausführlich (`npm run smoke:minecraft`):
 
@@ -46,6 +48,7 @@ Ausführlich (`npm run smoke:minecraft`):
 | Datum | Commit | Ergebnis | Anmerkung |
 |---|---|---|---|
 | 2026-10-24 | dies vor Commit | ✅ bestanden | „ERGEBNIS: Failover erfolgreich - PC-B hostet den Server" |
+| 2026-10-24 | vor Commit | ✅ bestanden | Wiederholung nach dem Hub-Token-Fix |
 
 Ausführlich (`npm run smoke:failover`, Beobachtungen aus dem Log des Laufs):
 
@@ -101,6 +104,9 @@ Dateiempfang schickte). Der Regressionstest
 | Datum | Beschreibung | Schwere | Status |
 |---|---|---|---|
 | 2026-10-24 | Backup-Replikation: Empfaenger las das Angebot doppelt und antwortete erst nach dem Dateiempfang - Sender und Empfaenger warteten gegenseitig (Deadlock). | hoch | ✅ gelöst (Regressionstest vorhanden) |
+| 2026-10-24 | „Ungültiges Hub-Token" beim Erstellen einer Gruppe auf dem eingebauten Hub: der eingebaute Hub hat immer ein Token (Keystore), das Dialogformular schickte aber keins mit. | mittel | ✅ gelöst (Token wird am eigenen Hub automatisch verwendet; falsche Eingabe schlägt fehl - `tests/embedded-hub.test.ts`) |
+| 2026-10-24 | Peer-ID des eingebauten Hubs war pro App-Start neu: gespeicherte Sitzungs- und Einladungsadressen verwiesen danach auf einen anderen Hub. | hoch | ✅ gelöst (persistenter Ed25519-Schlüssel für den Hub, Port-Persistenz, Adress-Kanonisierung nach Peer-ID) |
+| 2026-10-24 | Nach einem Hub-Neustart gingen Sitzungstokens und Public Keys verloren (BAD_SESSION/UNKNOWN_SENDER) und der App-Start brach an einem fehlgeschlagenen Hub-Kontakt ab. | hoch | ✅ gelöst (HubService.restore baut Sitzungen + Public Keys wieder auf; der Start toleriert Verbindungsfehler und reconnectet) |
 | 2026-10-24 | Nach einem Hub-Neustart verband sich die App vorher nie wieder automatisch. | mittel | ✅ gelöst (automatischer Neuverbindungsversuch alle 15 s) |
 | 2026-10-24 | Beim allerersten Start in einer neuen Gruppe liess sich der Server nicht starten, weil die automatische Lease-Anforderung einen vorhandenen Welt-Eintrag im Hub verlangte - der aber erst nach dem Start entstehen kann. | hoch | ✅ gelöst (Lease erlaubt auch ohne Hub-Welt-Eintrag; lokale Welt wird bevorzugt) |
 

@@ -39,6 +39,7 @@ Erwartung: **alle Tests grün**, keine Warnungen im Typecheck.
 | `tests/integration-network.test.ts` | **Echtes libp2p-Netz**: Hub + 2 Mitglieder |
 | `tests/integration-backup-replication.test.ts` | **Echtes libp2p-Netz**: Backup-Replikation, Deadlock-Regression |
 | `tests/app-service.test.ts` | **Rauchtest**: Welt importieren, Backup, Restore, Ein-Klick-Prüfungen |
+| `tests/embedded-hub.test.ts` | **Eingebauter Hub**: Gruppenerstellung ohne Token-Eingabe, Fail-closed bei falschem Token, externer Hub mit/ohne Token, stabile Peer-ID/Port über Neustarts, Sitzungs-Wiederherstellung |
 
 ---
 

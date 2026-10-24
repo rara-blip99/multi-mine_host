@@ -174,6 +174,12 @@ Zusätzlich realisiert (Stand 2026-10-24):
 | Bei Beitritt: Einladungslink einfügen füllt Hub + Gruppe + Code | ✓ Auto-Erkennung im Create-/Join-Modal |
 | Spielerzahl per Server-List-Ping statt Log-Schätzung | ✓ im Heartbeat verbunden |
 | Automatischer Firewall-Hinweis | ✓ Dashboard-Hinweis, wenn nur Privat-Adressen sichtbar sind |
+| Gruppenerstellung am eigenen Hub ohne Token-Eingabe | ✓ Das Token des eingebauten Hubs wird automatisch verwendet (`tests/embedded-hub.test.ts`); ein Benutzereintrag gewinnt weiterhin, ein falsches Token schlägt fehl (fail-closed) |
+| Stabile Identität des eingebauten Hubs | ✓ Ed25519-Schlüssel im Keystore - Peer-ID bleibt über Neustarts gleich |
+| Stabiler Port des eingebauten Hubs | ✓ Der konkret gebundene Port wird persistiert (`embeddedHubLastPort`); bei Portkonflikt Rückfall auf einen freien Port |
+| Adress-Kanonisierung | ✓ Alte Multiaddrs des eigenen Hubs (Peer-ID-Gleichheit) werden beim Verbinden auf die laufende Adresse reguliert; Einladungslink/Sitzung bleiben dadurch nutzbar |
+| Hub-Neustart baut Sitzungen + Public Keys wieder auf | ✓ Nach Neustart gelten gespeicherte Sitzungstokens weiter und die Signaturprüfung funktioniert (Regressionstest in `tests/hub-service.test.ts`) |
+| Hub-Verbindungsfehler blockieren den Start nicht | ✓ Beim Start missglückte Verbindungen werden im Hintergrund (alle 15 s) wiederaufgenommen |
 
 ## 9a. Manuell verifiziert (nicht automatisiert)
 
@@ -202,4 +208,4 @@ Der Test ist reproduzierbar: `npm run smoke:minecraft`.
 | Der Serverstart ohne Lease wird verhindert, auch im Single-Player-Betrieb ohne Gruppe | Gewollt: ohne Hub gibt es keine Wettlaufsicherheit. Ein reiner Offline-Modus ist nicht implementiert. |
 | Die Netzwerkbandbreite wird nicht gemessen | Behoben: Der Hub bietet einen Messstrom (`/multimine/speed/1.0.0`), der Upload, Download, Latenz und Jitter misst. |
 | `session.lock` bleibt beim Import erhalten | Die Integritätsprüfung warnt davor. |
-| Der Hub speichert seinen Zustand unverschlüsselt | Er enthält keine Geheimnisse, nur Mitglieds-IDs und Lease-Zustände. |
+| Der Hub speichert seinen Zustand unverschlüsselt | `state/hub-state.json` enthält **kein Hub-Token** (dieses liegt im verschlüsselten Keystore), aber Klartext-**Einladungscodes** und **Sitzungstokens** der Mitglieder (Bearer-Credentials, gültig nur gegenüber diesem Hub). Die Datei liegt im Anwendungsdaten-Verzeichnis des Benutzerprofils; ihr Schutz entspricht dem aller Anwendungsdaten dieses Benutzers. Ein verschlüsselter Hub-Zustand ist eine mögliche künftige Verbesserung. |
