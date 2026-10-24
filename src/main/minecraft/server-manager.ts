@@ -36,6 +36,13 @@ export interface ServerManagerOptions {
   levelName?: string
   /** Minecraft-Version des Servers (fuer die Kompatibilitaetspruefung). */
   mcVersion?: string
+  /**
+   * true = der Server darf mit einem (noch) nicht vorhandenen Weltverzeichnis
+   * starten; Minecraft generiert die Welt beim Start selbst. Wird fuer die
+   * Bootstrap-Generierung neuer Welten benoetigt und ist bewusst NICHT Teil
+   * des normalen Starts: dort fehlt die Welt als Fehler.
+   */
+  allowFreshWorld?: boolean
   config?: Partial<ServerConfigOptions>
   ops?: string[]
   whitelist?: string[]
@@ -115,7 +122,11 @@ export class MinecraftServerManager {
       errors.push(`Server-JAR nicht gefunden: ${this.opts.jarPath}`)
     }
     if (!existsSync(this.worldPath)) {
-      errors.push(`Weltverzeichnis nicht gefunden: ${this.worldPath}`)
+      if (!this.opts.allowFreshWorld) {
+        errors.push(`Weltverzeichnis nicht gefunden: ${this.worldPath}`)
+      }
+      // Bei allowFreshWorld generiert Minecraft die Welt selbst - es existiert
+      // noch nichts, was geprueft werden koennte.
     } else {
       const integrity = checkWorldIntegrity(this.worldPath)
       errors.push(...integrity.problems)

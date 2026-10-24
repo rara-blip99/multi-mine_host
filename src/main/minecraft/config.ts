@@ -30,6 +30,11 @@ export interface ServerConfigOptions {
   gamemode: string
   /** Welttyp. */
   levelType: string
+  /**
+   * Optionaler Welt-Seed. Leere/fehlende Angabe = Minecraft erzeugt
+   * einen Zufalls-Seed.
+   */
+  seed?: string
   /** Ob der Server sich selbst ueber IPv6 erreichbar machen soll. */
   enableStatus: boolean
 }
@@ -57,7 +62,7 @@ export function renderServerProperties(opts: ServerConfigOptions): string {
   const lines: Array<[string, string]> = [
     ['server-port', String(opts.port)],
     ['level-name', opts.levelName],
-    ['level-seed', ''],
+    ['level-seed', opts.seed ? escapeProperties(String(opts.seed)) : ''],
     ['level-type', opts.levelType],
     ['gamemode', opts.gamemode],
     ['difficulty', opts.difficulty],

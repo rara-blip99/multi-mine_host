@@ -9,8 +9,10 @@ import type {
   ServerLogLine,
   ServerStatus,
   SyncProgress,
+  WorldCreateInfo,
   WorldManifest
 } from './types'
+import type { WorldCreateRequest as SharedWorldCreateRequest } from './types'
 import type { InviteInfo } from './protocol'
 import type { UpdateInfo } from './types'
 
@@ -50,6 +52,8 @@ export const IPC = {
   worldCheck: 'world:check',
   worldManifest: 'world:manifest',
   worldPickFolder: 'world:pick-folder',
+  worldCreate: 'world:create',
+  worldSelect: 'world:select',
 
   backupList: 'backup:list',
   backupCreate: 'backup:create',
@@ -88,9 +92,17 @@ export interface WorldImportRequest {
   overwrite?: boolean
 }
 
+export type WorldCreateRequest = SharedWorldCreateRequest
+
 export interface OperationResult {
   ok: boolean
   error?: string
+  /**
+   * true bei world:start, wenn auf diesem Host noch keine Welt existiert.
+   * Die Oberfläche kann dann die Auswahl "Neue Welt erstellen / Vorhandene
+   * Welt auswählen" anbieten.
+   */
+  worldMissing?: boolean
 }
 
 export interface MmhApi {
@@ -119,6 +131,8 @@ export interface MmhApi {
 
   listWorlds(): Promise<Array<{ path: string; name: string; dataVersion: number }>>
   importWorld(req: WorldImportRequest): Promise<OperationResult>
+  createWorld(req: WorldCreateRequest): Promise<OperationResult & { info?: WorldCreateInfo; startError?: string }>
+  selectWorld(name: string): Promise<OperationResult>
   checkWorld(): Promise<{ ok: boolean; problems: string[]; warnings: string[] }>
   worldManifest(): Promise<WorldManifest | null>
   pickWorldFolder(): Promise<string | null>

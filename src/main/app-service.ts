@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, renameSync, rmSync, statSync, readdirSync, symlinkSync, lstatSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, readdirSync, symlinkSync, lstatSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { cp } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
@@ -15,6 +15,10 @@ import type {
   HostLease,
   ServerStatus,
   SyncProgress,
+  WorldCreateRequest,
+  WorldCreateInfo,
+  WorldGameMode,
+  WorldDifficulty,
   WorldRegistryEntry
 } from '@shared/types'
 import type { InviteInfo, PeerDiscoveryInfo } from '@shared/protocol'
@@ -38,7 +42,11 @@ import { scoreCandidates, selectHost, DEFAULT_REQUIREMENTS } from './host/electi
 import type { ElectionContext, HostRequirements } from './host/election'
 import { MinecraftServerManager } from './minecraft/server-manager'
 import { ensurePaperJar } from './minecraft/jar-manager'
+import { DEFAULT_SERVER_CONFIG, ensureServerDir, readOps, updateServerProperties, writeOps } from './minecraft/config'
 import { checkWorldIntegrity, listWorldsIn, readWorldInfo } from './minecraft/world'
+import { MC_VERSIONS, checkCompatibility, findVersion } from './minecraft/versions'
+import { checkFreeDiskSpace, isPortAvailable, validateSeed, validateWorldName } from './minecraft/world-create'
+import { resolveWithin, directorySize, PathGuardError } from './security/path-guard'
 import { buildManifest, verifyWorld } from './sync/manifest'
 import { activateWorld, hasFreeSpace } from './sync/world-sync'
 import { BackupManager } from './backup/backup-manager'
@@ -69,6 +77,56 @@ export interface AppServiceOptions {
 }
 
 type Listener = (state: AppState) => void
+
+const WORLD_GAME_MODES: WorldGameMode[] = ['survival', 'creative']
+const WORLD_DIFFICULTIES: WorldDifficulty[] = ['peaceful', 'easy', 'normal', 'hard']
+const WORLD_CREATE_TIMEOUT_MS = 7 * 60_000
+
+/** true, wenn ein Fehler ein "verschiedene Laufwerke"-Problem ist (EXDEV). */
+function isExdevError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as NodeJS.ErrnoException).code === 'EXDEV'
+  )
+}
+
+/** Uebersetzt PathGuardError in eine verstaendliche Nutzer-Meldung. */
+function pathGuardFriendly(err: PathGuardError): string {
+  switch (err.code) {
+    case 'RESERVED_NAME':
+      return 'Dieser Weltname ist unter Windows reserviert und kann nicht verwendet werden.'
+    case 'ABSOLUTE_PATH':
+    case 'DRIVE_LETTER':
+    case 'TRAVERSAL':
+    case 'COLON':
+      return 'Der Weltname darf keine Pfadangaben (Laufwerksbuchstaben, ":" oder "..") enthalten.'
+    case 'WINDOWS_NAME':
+      return 'Der Weltname darf nicht mit einem Punkt oder Leerzeichen enden.'
+    default:
+      return 'Der Weltname ist nicht zulässig.'
+  }
+}
+
+/**
+ * Macht typische Fehler der Welt-Erstellung fuer Nutzer verstaendlich,
+ * ohne technische Details zu verlieren.
+ */
+function worldCreateErrorHint(message: string): string {
+  if (/Server-Start abgebrochen/.test(message)) {
+    return 'Die Weltgenerierung wurde vom Bootstrap-Server abgebrochen. Die Detailursache steht in den Server-Logs.'
+  }
+  if (/Download/i.test(message) || /Pruefsumme|checksum/i.test(message)) {
+    return `Der Server-Download ist fehlgeschlagen: ${message}`
+  }
+  if (/timeout|Zeit/i.test(message)) {
+    return `Die Weltgenerierung hat zu lange gedauert (Zeitlimit): ${message}`
+  }
+  if (/ENOSPC|Speicherplatz/i.test(message)) {
+    return `Nicht genug Speicherplatz: ${message}`
+  }
+  return message
+}
 
 export class AppService {
   private state: AppState = defaultAppState()
@@ -103,6 +161,8 @@ export class AppService {
   private failoverTimer: NodeJS.Timeout | null = null
   private started = false
   private takeoverInProgress = false
+  /** true, waehrend eine neue Welt generiert wird (Doppel-/Parallelschutz). */
+  private worldCreationInProgress = false
   private serverLogs: Array<{ ts: number; level: string; message: string }> = []
 
   constructor(private readonly opts: AppServiceOptions = {}) {
@@ -967,9 +1027,47 @@ export class AppService {
 
   /** Startet den Minecraft-Server (nur wenn die Lease gehalten wird). */
   async startServer(force = false): Promise<{ ok: boolean; error?: string }> {
-    // Der Server läuft bereits -> nichts zu tun.
-    if (this.server && this.server.status().state === 'running') {
-      return { ok: true }
+    // Welt gewechselt? Der Server-Manager bindet seine Welt beim Aufbau
+    // (Konstruktor-Option). Nach createWorld/selectWorld existiert der alte
+    // Manager weiter, waere aber an die vorige Welt gebunden - Status,
+    // Preflight und Bereitschaftsbeobachtung bezoege sich auf den falschen
+    // Pfad. Solange er nicht laeuft, wird er verworfen und frisch aufgebaut.
+    const wantedWorld = this.worldPath()
+    if (
+      this.server &&
+      this.server.worldPath !== wantedWorld &&
+      this.server.status().state !== 'running' &&
+      this.server.status().state !== 'starting'
+    ) {
+      logger.info('app', 'Welt gewechselt - Serververwaltung wird neu aufgebaut', {
+        oldWorld: this.server.worldPath,
+        newWorld: wantedWorld
+      })
+      this.server = null
+    }
+
+    // Der Server läuft bereits -> ok. ABER: Ein laufender Server für eine
+    // ANDERE Welt darf nicht als Start der gerade gewählten Welt durchgehen -
+    // das Startergebnis würde sonst einen fremden Weltstand als
+    // "gewünschter Start" verkaufen und die Oberfläche würde eine andere
+    // Welt anzeigen, als tatsächlich läuft (Regression, die im
+    // Welt-Erstellungstest aufgedeckt wurde). Klare Absage statt stiller
+    // Fortführung.
+    if (this.server) {
+      const runningState = this.server.status().state
+      if (runningState === 'running' || runningState === 'starting') {
+        if (this.server.worldPath !== wantedWorld) {
+          const oldName = basename(this.server.worldPath)
+          const wantedName = basename(wantedWorld)
+          return {
+            ok: false,
+            error:
+              `Es läuft bereits ein Server für die Welt "${oldName}". ` +
+              `Zum Starten von "${wantedName}" den laufenden Server zuerst stoppen.`
+          }
+        }
+        return { ok: true }
+      }
     }
     if (!this.server) {
       const prepared = await this.prepareServer()
@@ -1024,6 +1122,373 @@ export class AppService {
   /** Vorhandene Welten im Weltspeicher auflisten. */
   listLocalWorlds(): Array<{ path: string; name: string; dataVersion: number }> {
     return listWorldsIn(this.state.settings.worldsDir)
+  }
+
+  /**
+   * Erstellt eine neue Minecraft-Welt mit den vom Nutzer gewaehlten
+   * Einstellungen.
+   *
+   * Die Welt wird NICHT kuenstlich zusammengebaut: Es wird ein echter
+   * Paper-Server in einem temporaeren Verzeichnis gestartet (der gleiche
+   * Manager wie im Betrieb, mit allowFreshWorld), Minecraft generiert die
+   * Welt selbst, der Server wird kontrolliert gestoppt (save-off ->
+   * save-all flush),
+   * das Ergebnis gegen die Weltkriterien geprueft und erst dann in den
+   * Weltspeicher verschoben. Danach wird die Welt ueber den ueblichen
+   * Startpfad (Lease, Hub-Registrierung, Bereitschaftspruefung) gestartet.
+   *
+   * Ueberschrieben wird nichts: Wenn im Weltspeicher bereits ein Ordner
+   * mit gleichem Namen liegt, wird abgelehnt.
+   */
+  async createWorld(req: WorldCreateRequest): Promise<{
+    ok: boolean
+    error?: string
+    info?: WorldCreateInfo
+    startError?: string
+  }> {
+    if (this.worldCreationInProgress) {
+      return { ok: false, error: 'Es läuft bereits eine Welt-Erstellung. Bitte warte, bis der aktuelle Vorgang abgeschlossen ist.' }
+    }
+    this.worldCreationInProgress = true
+    try {
+      return await this.createWorldInner(req)
+    } finally {
+      this.worldCreationInProgress = false
+      this.patch({ sync: defaultSyncProgress() })
+    }
+  }
+
+  private async createWorldInner(req: WorldCreateRequest): Promise<{
+    ok: boolean
+    error?: string
+    info?: WorldCreateInfo
+    startError?: string
+  }> {
+    let bootstrap: MinecraftServerManager | null = null
+    /** true = der Bootstrap-Ordner bleibt nach Fehlern fuer Analyse liegen. */
+    let keepBootstrapForAnalysis = true
+    const bootstrapDir = join(Paths.tmp(), `world-create-${Date.now()}-${randomUUID().slice(0, 8)}`)
+    this.patchWorldCreateProgress('Neue Welt vorbereiten - Einstellungen werden geprüft')
+    try {
+      // 0) Gruppe und Hub: Eine Welt gehoert immer zu einer Gruppe; ohne
+      //    Hub gibt es keine Lease und keine Registrierung der Welt.
+      if (!this.session.groupId || !this.state.group) {
+        return {
+          ok: false,
+          error:
+            'Es ist noch keine Gruppe eingerichtet. Erstelle auf der Seite "Gruppe" eine neue Gruppe, bevor eine Welt angelegt wird.'
+        }
+      }
+      if (!this.hub?.connected) {
+        try {
+          await this.reconnectHub()
+        } catch {
+          /* unten deutlich gemeldet */
+        }
+        if (!this.hub?.connected) {
+          return {
+            ok: false,
+            error:
+              'Der Koordinations-Hub ist nicht erreichbar. Eine neue Welt kann nur angelegt werden, solange die Gruppe über den Hub koordiniert wird (Lease, Registrierung).'
+          }
+        }
+      }
+
+      // 1) Weltname (Pfadsicherheit, Ein-Segment, reservierte Namen)
+      const name = validateWorldName(req.name)
+
+      // 2) Zielordner: Kollisionen werden abgelehnt, nichts wird ueberschrieben.
+      const worldsDir = this.state.settings.worldsDir
+      let target: string
+      try {
+        target = resolveWithin(worldsDir, name)
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof PathGuardError ? pathGuardFriendly(err) : 'Der Weltname ist nicht zulässig.'
+        }
+      }
+      if (existsSync(target)) {
+        return {
+          ok: false,
+          error: `Im Weltspeicher existiert bereits ein Ordner "${name}". Wähle eine vorhandene Welt aus (Weltverwaltung) oder wähle einen anderen Namen.`
+        }
+      }
+
+      // 3) Version: Es werden nur Versionen akzeptiert, die als Paper-Build
+      //    verfuegbar sind und von der Anwendung unterstuetzt werden.
+      const version = findVersion(req.mcVersion)
+      if (!version || !version.paperAvailable) {
+        return {
+          ok: false,
+          error: `Die Minecraft-Version "${req.mcVersion}" wird nicht unterstützt. Verfügbare Versionen: ${MC_VERSIONS.filter((v) => v.paperAvailable).map((v) => v.version).join(', ')}.`
+        }
+      }
+
+      // 4) Spielmodus und Schwierigkeit (feste Auswahl, nichts Freitextliches)
+      if (!WORLD_GAME_MODES.includes(req.gameMode)) {
+        return { ok: false, error: 'Ungültiger Spielmodus. Erlaubt sind "Überleben" und "Kreativ".' }
+      }
+      if (!WORLD_DIFFICULTIES.includes(req.difficulty)) {
+        return { ok: false, error: 'Ungültiger Schwierigkeitsgrad. Erlaubt sind Friedlich, Einfach, Normal und Schwer.' }
+      }
+
+      // 5) Seed: leer lassen = Minecraft wuerfelt einen Zufalls-Seed
+      const seed = validateSeed(req.seed)
+
+      // 6) Port-Verfuegbarkeit: Der Bootstrap-Server und spaeter der
+      //    Produktions-Server lauschen auf dem konfigurierten Port. Ist er
+      //    belegt (z. B. laufender Server), bricht die Erstellung klar ab.
+      this.patchWorldCreateProgress('Neue Welt vorbereiten - Serverport prüfen')
+      const portOk = await isPortAvailable(this.state.settings.serverPort)
+      if (!portOk) {
+        return {
+          ok: false,
+          error:
+            `Der Minecraft-Port ${this.state.settings.serverPort} wird bereits verwendet. Sehr wahrscheinlich läuft gerade ein Server - stoppe ihn bitte oder wähle in den Einstellungen einen freien Port.`
+        }
+      }
+
+      // 7) Speicherplatz: Pruefen am Ziel- und am Bootstrap-Verzeichnis.
+      const spaceTarget = checkFreeDiskSpace(worldsDir)
+      if (!spaceTarget.ok) return { ok: false, error: spaceTarget.error ?? 'Nicht genug Speicherplatz.' }
+      const spaceTmp = checkFreeDiskSpace(Paths.tmp())
+      if (!spaceTmp.ok) return { ok: false, error: spaceTmp.error ?? 'Nicht genug Speicherplatz.' }
+
+      // 8) Server-JAR herunterladen (bestehende Infrastruktur, mit Pruefsumme
+      //    und Cache); Fortschritt ist sichtbar.
+      const jar = await ensurePaperJar(req.mcVersion, (received, total) => {
+        this.patch({
+          sync: {
+            ...defaultSyncProgress(),
+            phase: 'preparing',
+            message: `Server-JAR für die neue Welt wird heruntergeladen (${Math.round(received / 1024 / 1024)} MB)`,
+            fileIndex: 1,
+            fileCount: 1,
+            bytesTransferred: received,
+            totalBytes: total
+          }
+        })
+      })
+
+      // 9) Bootstrap-Serververzeichnis: EULA, server.properties mit den
+      //    gewaehlten Einstellungen. Die Übernahme erfolgt deterministisch
+      //    ueber renderServerProperties.
+      this.patchWorldCreateProgress('Neue Welt vorbereiten - Serververzeichnis anlegen')
+      const bootstrapConfig = {
+        ...DEFAULT_SERVER_CONFIG,
+        port: this.state.settings.serverPort,
+        levelName: 'world',
+        gamemode: req.gameMode,
+        difficulty: req.difficulty,
+        seed: seed ?? undefined
+      }
+      ensureServerDir(bootstrapDir, { config: bootstrapConfig, ops: [], whitelist: [] })
+
+      // 10) Echter Generierungslauf: Der Server faehrt hoch, generiert die
+      //     Startregionen, rendert "Done (...s)!" (Bereitschaft) und wird
+      //     danach kontrolliert gestoppt (save-off -> save-all flush -> stop).
+      this.patchWorldCreateProgress(
+        `Neue Welt "${name}" wird von Minecraft generiert - der erste Serverstart kann einige Minuten dauern`
+      )
+      bootstrap = new MinecraftServerManager({
+        serverDir: bootstrapDir,
+        jarPath: jar.path,
+        ramBytes: this.state.settings.serverRamBytes,
+        port: this.state.settings.serverPort,
+        worldPath: join(bootstrapDir, 'world'),
+        levelName: 'world',
+        mcVersion: req.mcVersion,
+        allowFreshWorld: true,
+        config: bootstrapConfig,
+        javaPath: (await this.perf.detectJava()).path || undefined,
+        onLog: (line) => {
+          this.serverLogs.push({ ts: line.ts, level: line.level, message: line.message })
+          if (this.serverLogs.length > 500) this.serverLogs.shift()
+        },
+        onStateChange: (state) => {
+          this.patch({ server: { ...this.state.server, state } })
+        }
+      })
+      await bootstrap.start({ timeoutMs: WORLD_CREATE_TIMEOUT_MS })
+      await bootstrap.quiesceAndStop(90_000)
+
+      // 11) Verifizieren: Es wird nur eine echte, vollstaendig gespeicherte
+      //     Welt weiterverwendet - niemals ein angelegter Ordner ohne Inhalt.
+      const generatedPath = join(bootstrapDir, 'world')
+      const integrity = checkWorldIntegrity(generatedPath)
+      if (!integrity.ok || !integrity.info) {
+        throw new Error(
+          `Die generierte Welt ist unvollständig (${integrity.problems.join(', ') || 'keine level.dat'}). Das Verzeichnis ${bootstrapDir} wurde zur Analyse beibehalten.`
+        )
+      }
+
+      // 12) In den Weltspeicher verschieben. Der Zielordner existiert nicht
+      //     (oben geprueft). Querverweise auf alte Stände gibt es nicht: Die
+      //     Welt ist neu und wird erst beim naechsten Start beim Hub
+      //     registriert.
+      mkdirSync(worldsDir, { recursive: true })
+      try {
+        renameSync(generatedPath, target)
+      } catch (err) {
+        if (isExdevError(err)) {
+          await copyDirectory(generatedPath, target)
+          rmSync(generatedPath, { recursive: true, force: true })
+        } else {
+          throw err
+        }
+      }
+      // Ab hier ist die Welt gesichert - der Bootstrap-Ordner enthaelt nur
+      // noch Konfigurationsreste und wird im finally aufgeraeumt.
+      keepBootstrapForAnalysis = false
+
+      // 13) Produktionsserververzeichnis mit denselben Server-Grundeinstellungen
+      //     ausstatten (Konfiguration der neuen Welt) und bei "Cheats" den
+      //     Ersteller als Operator eintragen.
+      const serverDir = this.serverDir()
+      ensureServerDir(serverDir, { config: bootstrapConfig, ops: [], whitelist: [] })
+      const propsPath = join(serverDir, 'server.properties')
+      const currentProps = readFileSync(propsPath, 'utf8')
+      writeFileSync(
+        propsPath,
+        updateServerProperties(currentProps, {
+          difficulty: req.difficulty,
+          gamemode: req.gameMode
+        }),
+        'utf8'
+      )
+      if (req.cheats) {
+        const operator = this.identity.displayName
+        const operators = readOps(serverDir)
+        if (!operators.includes(operator)) writeOps(serverDir, [...operators, operator])
+      }
+
+      // 14) Session: Die neue Welt gehoert zu dieser Gruppe/Session. Sie ist
+      //     bewusst noch NICHT als synchronisiert/failoverbereit markiert -
+      //     das geschieht erst mit dem Hub-Commit beim Serverstart.
+      await this.saveSession({ worldName: name, worldPath: target })
+      this.journal.append('world-create', {
+        worldName: name,
+        mcVersion: req.mcVersion,
+        dataVersion: integrity.info.dataVersion,
+        seed: seed ? 'provided' : 'random',
+        cheats: req.cheats
+      })
+      logger.info('app', 'Neue Welt erstellt', { worldName: name, target, mcVersion: req.mcVersion })
+
+      const info: WorldCreateInfo = {
+        worldName: name,
+        worldPath: target,
+        mcVersion: req.mcVersion,
+        gameMode: req.gameMode,
+        difficulty: req.difficulty,
+        seed: seed ? seed : null,
+        cheats: req.cheats,
+        sizeBytes: await directorySize(target)
+      }
+
+      // 15) Welt starten (ueber den ueblichen Pfad: Lease, Registrierung,
+      //     Serverstart mit bestaetigtem Bereitschafts-Check).
+      const startResult = await this.startWorld()
+      if (!startResult.ok) {
+        return {
+          ok: true,
+          info,
+          startError: startResult.error ?? 'Der Start der neu erstellten Welt ist fehlgeschlagen.'
+        }
+      }
+      return { ok: true, info }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.error('app', 'Welt-Erstellung fehlgeschlagen', { error: message, bootstrapDir })
+      return {
+        ok: false,
+        error: worldCreateErrorHint(message)
+      }
+    } finally {
+      if (bootstrap) {
+        try {
+          const st = bootstrap.status()
+          if (st.state === 'running' || st.state === 'starting') await bootstrap.stop(30_000)
+        } catch {
+          /* Bootstrap laeuft nicht mehr - ok */
+        }
+        bootstrap = null
+      }
+      if (keepBootstrapForAnalysis && existsSync(bootstrapDir)) {
+        // Fehlerfall: Bootstrap-Verzeichnis fuer die Analyse behalten; auf
+        // den Ablageort wird in der Fehlermeldung bzw. im Log hingewiesen.
+        logger.warn('app', 'Bootstrap-Verzeichnis wurde zur Analyse beibehalten', { bootstrapDir })
+      } else if (existsSync(bootstrapDir)) {
+        // Erfolg: nur Konfigurationsreste - aufraeumen.
+        try {
+          rmSync(bootstrapDir, { recursive: true, force: true })
+        } catch {
+          logger.warn('app', 'Bootstrap-Verzeichnis konnte nicht entfernt werden', { bootstrapDir })
+        }
+      }
+    }
+  }
+
+  /** Fortschritt der Welt-Erstellung sichtbar machen (bestehende Sync-Anzeige). */
+  private patchWorldCreateProgress(message: string): void {
+    this.patch({
+      sync: {
+        ...defaultSyncProgress(),
+        phase: 'preparing',
+        message
+      }
+    })
+  }
+
+  /**
+   * Waehlt eine bereits im Weltspeicher vorhandene Welt als aktive Welt
+   * dieser Session aus (alternative zum Neuerstellen, z. B. nach einem
+   * Umzug oder wenn eine Welt woanders generiert wurde). Die Welt wird auf
+   * Lesbarkeit und Kompatibilitaet mit der konfigurierten Server-Version
+   * geprueft; sie wird nicht veraendert.
+   */
+  async selectWorld(name: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const safe = validateWorldName(name)
+      let target: string
+      try {
+        target = resolveWithin(this.state.settings.worldsDir, safe)
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof PathGuardError ? pathGuardFriendly(err) : 'Der Weltname ist nicht zulässig.'
+        }
+      }
+      if (!existsSync(target)) {
+        return {
+          ok: false,
+          error: `Unter dem Namen "${safe}" existiert im Weltspeicher keine Welt.`
+        }
+      }
+      const integrity = checkWorldIntegrity(target)
+      if (!integrity.ok || !integrity.info) {
+        return {
+          ok: false,
+          error: `Die Welt "${safe}" ist nicht lesbar: ${integrity.problems.join(', ') || 'keine level.dat'}`
+        }
+      }
+      const compat = checkCompatibility(integrity.info.dataVersion, this.state.settings.mcVersion)
+      if (!compat.compatible) {
+        return {
+          ok: false,
+          error: `Die Welt "${safe}" (${integrity.info.mcVersion ?? 'unbekannte Version'}) passt nicht zur konfigurierten Server-Version ${this.state.settings.mcVersion}: ${compat.reason}`
+        }
+      }
+      await this.saveSession({ worldName: safe, worldPath: target })
+      this.journal.append('world-select', { worldName: safe, target, dataVersion: integrity.info.dataVersion })
+      logger.info('app', 'Vorhandene Welt als aktive Welt ausgewählt', { worldName: safe, target })
+      return { ok: true }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logger.error('app', 'Auswahl der Welt fehlgeschlagen', { error: message, name })
+      return { ok: false, error: message }
+    }
   }
 
   /**
@@ -1539,7 +2004,11 @@ export class AppService {
     if (!world) {
       // Kein bekannter Weltstand im Hub. Wenn lokal bereits eine Welt
       // vorliegt (z. B. gerade importiert), wird sie verwendet - sonst
-      // erzeugt der Server eine frische Welt.
+      // bricht die Uebernahme klar ab: Eine Welt darf nicht stillschweigend
+      // vom Server generiert werden, weil sonst zwei Hosts unabhaengig
+      // dieselbe Welt initialisieren koennten. Die Oberflaeche fuehrt den
+      // Host stattdessen durch "Neue Welt erstellen" bzw. "Vorhandene Welt
+      // auswaehlen" (createWorld/selectWorld).
       const localInfo = readWorldInfo(this.worldPath())
       if (localInfo && localInfo.dataVersion > 0) {
         this.patch({
@@ -1555,12 +2024,17 @@ export class AppService {
       this.patch({
         failover: {
           ...this.state.failover,
-          phase: 'starting',
+          phase: 'blocked',
           updatedAt: Date.now(),
-          message: 'Kein bekannter Weltstand - es wird eine neue Welt angelegt'
+          message: 'Keine Welt vorhanden - bitte zuerst eine Welt erstellen oder auswählen'
         }
       })
-      return { ok: true, reason: 'Neue Welt', warnings }
+      return {
+        ok: false,
+        reason:
+          'Keine Welt vorhanden: Erstelle eine neue Welt oder wähle eine bereits vorhandene Welt aus, bevor der Server gestartet wird.',
+        warnings
+      }
     }
 
     // 1) Lokal bereits vorhanden?
@@ -1792,7 +2266,7 @@ export class AppService {
    * Der Ablauf nutzt dieselben Mechanismen wie das Failover - es entsteht
    * kein zweiter Synchronisationspfad.
    */
-  async startWorld(): Promise<{ ok: boolean; error?: string }> {
+  async startWorld(): Promise<{ ok: boolean; error?: string; worldMissing?: boolean }> {
     const myId = this.identity.nodeId
 
     // 1) Konfiguration und Gruppe
@@ -1827,6 +2301,21 @@ export class AppService {
       return {
         ok: false,
         error: 'Der Koordinations-Hub ist nicht erreichbar - die Anwendung versucht es automatisch weiter. Bitte spaeter erneut versuchen.'
+      }
+    }
+
+    // 2b) Gibt es ueberhaupt eine Welt? Nur wenn der Hub keinen Weltstand
+    //     kennt UND lokal keine Welt liegt, fuehrt der Start nicht durch
+    //     Trotziges Weitermachen ins Leere, sondern verweist die Oberflaeche
+    //     auf die Auswahl "Neue Welt erstellen" / "Vorhandene Welt auswaehlen".
+    const hasHubWorld = this.state.world != null
+    const hasLocalWorld = readWorldInfo(this.worldPath()) != null
+    if (!hasHubWorld && !hasLocalWorld) {
+      return {
+        worldMissing: true,
+        ok: false,
+        error:
+          'Auf diesem Host ist noch keine Welt eingerichtet. Erstelle eine neue Welt oder wähle eine vorhandene Welt aus.'
       }
     }
 

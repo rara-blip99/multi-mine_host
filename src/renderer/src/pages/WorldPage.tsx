@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useApp, formatBytes, formatTime } from '../state'
 import { Card, Empty, Field, Modal, Notice, Pill } from '../components/ui'
+import { CreateWorldModal, SelectWorldModal, worldCreatedNotice } from './CreateWorldModal'
 import type { BackupInfo } from '@shared/types'
 
 /**
@@ -15,6 +16,8 @@ export default function WorldPage(): React.JSX.Element {
   const [sourcePath, setSourcePath] = useState('')
   const [worldName, setWorldName] = useState('')
   const [busy, setBusy] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [selectOpen, setSelectOpen] = useState(false)
 
   const reload = (): void => {
     void api.listWorlds().then(setWorlds).catch(() => undefined)
@@ -90,6 +93,9 @@ export default function WorldPage(): React.JSX.Element {
         <div className="page-actions">
           <button className="btn" onClick={() => setImportOpen(true)}>
             + Welt importieren
+          </button>
+          <button className="btn" onClick={() => setCreateOpen(true)}>
+            ✨ Neue Welt erstellen
           </button>
           <button className="btn primary" onClick={() => void doBackup()} disabled={busy}>
             🗄 Backup jetzt
@@ -268,6 +274,29 @@ export default function WorldPage(): React.JSX.Element {
             </button>
           </div>
         </Modal>
+      )}
+
+      {createOpen && (
+        <CreateWorldModal
+          onClose={() => setCreateOpen(false)}
+          onCreated={(info, startError) => {
+            setCreateOpen(false)
+            const n = worldCreatedNotice(info, startError)
+            notify(n.message, n.kind)
+            reload()
+          }}
+        />
+      )}
+
+      {selectOpen && (
+        <SelectWorldModal
+          onClose={() => setSelectOpen(false)}
+          onSelected={(name) => {
+            setSelectOpen(false)
+            notify(`Welt "${name}" als aktive Welt eingerichtet`, 'ok')
+            reload()
+          }}
+        />
       )}
     </>
   )

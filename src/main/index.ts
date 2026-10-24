@@ -10,6 +10,7 @@ import { IPC } from '@shared/ipc'
 import type {
   GroupCreateRequest,
   GroupJoinRequest,
+  WorldCreateRequest,
   WorldImportRequest
 } from '@shared/ipc'
 import type { AppState, DiagnosticsReport, ServerLogLine } from '@shared/types'
@@ -166,6 +167,11 @@ function registerIpc(service: AppService): void {
     const result = await service.importWorld(r.sourcePath, r.name, r.overwrite)
     return { ok: result.ok, error: result.error }
   })
+  handle(IPC.worldCreate, async (req: never) => {
+    const r = req as unknown as WorldCreateRequest
+    return service.createWorld(r)
+  })
+  handle(IPC.worldSelect, (name: never) => service.selectWorld(name as unknown as string))
   handle(IPC.worldCheck, () => service.checkWorld())
   handle(IPC.worldManifest, () => service.currentManifest())
   handle(IPC.worldPickFolder, async () => {

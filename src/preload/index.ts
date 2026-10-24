@@ -3,9 +3,11 @@ import { IPC } from '@shared/ipc'
 import type {
   GroupCreateRequest,
   GroupJoinRequest,
+  OperationResult,
+  WorldCreateRequest,
   WorldImportRequest
 } from '@shared/ipc'
-import type { AppSettings, AppState } from '@shared/types'
+import type { AppSettings, AppState, WorldCreateInfo } from '@shared/types'
 
 /**
  * Sichere Bruecke zwischen Renderer und Main-Prozess.
@@ -49,6 +51,9 @@ const api = {
 
   listWorlds: () => ipcRenderer.invoke(IPC.worldList),
   importWorld: (req: WorldImportRequest) => ipcRenderer.invoke(IPC.worldImport, req),
+  createWorld: (req: WorldCreateRequest): Promise<OperationResult & { info?: WorldCreateInfo; startError?: string }> =>
+    ipcRenderer.invoke(IPC.worldCreate, req),
+  selectWorld: (name: string): Promise<OperationResult> => ipcRenderer.invoke(IPC.worldSelect, name),
   checkWorld: () => ipcRenderer.invoke(IPC.worldCheck),
   worldManifest: () => ipcRenderer.invoke(IPC.worldManifest),
   pickWorldFolder: () => ipcRenderer.invoke(IPC.worldPickFolder),

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useApp, formatBytes, formatRelative, formatTime } from '../state'
-import { Bar, Card, Notice, Pill, StatTile } from '../components/ui'
+import { Bar, Card, Modal, Notice, Pill, StatTile } from '../components/ui'
+import { CreateWorldModal, SelectWorldModal, worldCreatedNotice } from './CreateWorldModal'
 import type { ServerLogLine } from '@shared/types'
 
 /**
@@ -11,6 +12,9 @@ export default function Dashboard(): React.JSX.Element {
   const [logs, setLogs] = useState<ServerLogLine[]>([])
   const [busy, setBusy] = useState(false)
   const [addresses, setAddresses] = useState<string[]>([])
+  const [worldMissingOpen, setWorldMissingOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [selectOpen, setSelectOpen] = useState(false)
 
   const lease = state.lease
   const hostMember = state.members.find((m) => m.nodeId === lease?.holderId)
@@ -49,9 +53,10 @@ export default function Dashboard(): React.JSX.Element {
   // Fortschritt des Ein-Klick-Starts wird aus dem Failover-Fortschritt
   // abgeleitet (dort laeuft derselbe Mechanismus). Ein pulsierender
   // Fortschritt isst nur solange sichtbar, bis alle Schritte fertig sind.
-  const startPhases = ['detected', 'lease-acquired', 'draining', 'transferring', 'verifying', 'starting'] as const
+  const startPhases = ['creating', 'detected', 'lease-acquired', 'draining', 'transferring', 'verifying', 'starting'] as const
   const phaseRunning = startPhases.includes(state.failover.phase as (typeof startPhases)[number])
   const phaseLabels: Record<string, string> = {
+    creating: 'Neue Welt wird generiert …',
     detected: 'Verbindung zum Koordinationsdienst wird hergestellt …',
     'lease-acquired': 'Host-Lease übernommen',
     draining: 'Voriger Host wird kontrolliert gestoppt …',
@@ -64,8 +69,14 @@ export default function Dashboard(): React.JSX.Element {
     setBusy(true)
     try {
       const result = await api.startWorld()
-      if (result.ok) notify('Welt läuft - die Server-Adresse steht weiter unten', 'ok')
-      else notify(result.error ?? 'Start fehlgeschlagen', 'error')
+      if (result.ok) {
+        notify('Welt läuft - die Server-Adresse steht weiter unten', 'ok')
+      } else if (result.worldMissing) {
+        // Auf diesem PC liegt noch keine Welt: Auswahl anbieten.
+        setWorldMissingOpen(true)
+      } else {
+        notify(result.error ?? 'Start fehlgeschlagen', 'error')
+      }
     } finally {
       setBusy(false)
     }
@@ -435,6 +446,60 @@ export default function Dashboard(): React.JSX.Element {
           )}
         </Card>
       </div>
+
+      {worldMissingOpen && (
+        <Modal
+          title="Keine Welt vorhanden"
+          description="Auf diesem PC ist noch keine Welt eingerichtet. Was möchtest du tun?"
+          onClose={() => setWorldMissingOpen(false)}
+        >
+          <div className="col" style={{ gap: 8 }}>
+            <button
+              className="btn primary"
+              onClick={() => {
+                setWorldMissingOpen(false)
+                setCreateOpen(true)
+              }}
+            >
+              ✨ Neue Welt erstellen
+            </button>
+            <button
+              className="btn"
+              onClick={() => {
+                setWorldMissingOpen(false)
+                setSelectOpen(true)
+              }}
+            >
+              📂 Vorhandene Welt auswählen
+            </button>
+            <button className="btn" onClick={() => setWorldMissingOpen(false)}>
+              Abbrechen
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {createOpen && (
+        <CreateWorldModal
+          onClose={() => setCreateOpen(false)}
+          onCreated={(info, startError) => {
+            setCreateOpen(false)
+            const n = worldCreatedNotice(info, startError)
+            notify(n.message, n.kind)
+          }}
+        />
+      )}
+
+      {selectOpen && (
+        <SelectWorldModal
+          onClose={() => setSelectOpen(false)}
+          onSelected={(name) => {
+            setSelectOpen(false)
+            notify(`Welt "${name}" als aktive Welt eingerichtet - starte gerade …`, 'ok')
+            void startWorld()
+          }}
+        />
+      )}
     </>
   )
 }

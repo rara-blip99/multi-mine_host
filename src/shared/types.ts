@@ -240,6 +240,37 @@ export interface WorldRegistryEntry {
 
 export type WorldHealth = 'ok' | 'checking' | 'corrupt' | 'unknown'
 
+/** Spielmodus einer neu erstellten Welt. */
+export type WorldGameMode = 'survival' | 'creative'
+
+/** Schwierigkeit einer neu erstellten Welt. */
+export type WorldDifficulty = 'peaceful' | 'easy' | 'normal' | 'hard'
+
+export interface WorldCreateRequest {
+  /** Ordnername der Welt (ein Pfadsegment, wird validiert). */
+  name: string
+  /** Minecraft-Version, für die die Welt generiert wird. */
+  mcVersion: string
+  gameMode: WorldGameMode
+  difficulty: WorldDifficulty
+  /** Optionaler Welt-Seed; leer/unset = Minecraft erzeugt einen Zufalls-Seed. */
+  seed?: string
+  /** true = Erstellt-Operator (Cheats) in der frischen Welt anlegen. */
+  cheats: boolean
+}
+
+export interface WorldCreateInfo {
+  worldName: string
+  worldPath: string
+  mcVersion: string
+  gameMode: WorldGameMode
+  difficulty: WorldDifficulty
+  /** Gewählter Seed oder null, wenn Minecraft zufällig gewürfelt hat. */
+  seed: string | null
+  cheats: boolean
+  sizeBytes: number
+}
+
 // ---------------------------------------------------------------------------
 // Backups
 // ---------------------------------------------------------------------------
@@ -345,6 +376,7 @@ export interface SyncResult {
 export type FailoverPhase =
   | 'idle'
   | 'detected'
+  | 'creating'
   | 'lease-acquired'
   | 'draining'
   | 'quiescing'
