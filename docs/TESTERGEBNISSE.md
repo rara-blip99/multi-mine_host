@@ -16,6 +16,7 @@ Nachweis – es werden **nur tatsächlich durchgeführte** Tests protokolliert.
 | 2026-10-21 | `d683c62` | ✅ | ✅ 153 | ✅ | `npm run typecheck`, `npm test`, `npm run build` |
 | 2026-10-24 | vor Commit | ✅ | ✅ 164 | ✅ | + Backup-Replikation (2 Tests, echtes libp2p), Einladungslink (5 Tests), AppService-Ein-Klick-Pruefungen (2 Tests) |
 | 2026-10-24 | vor Commit | ✅ | ✅ 170 | ✅ | + Regression "Ungültiges Hub-Token"/eingebauter Hub (5 Tests in `tests/embedded-hub.test.ts`), Sitzungs-Wiederherstellung nach Hub-Neustart (1 Test in `tests/hub-service.test.ts`); dreifacher Wiederholungslauf stabil |
+| 2026-10-24 | vor Commit | ✅ | ✅ 181 (21 Dateien) | ✅ | + `tests/world-create.test.ts` neu: 11 Fälle mit zwei echten Paper-Generierungen (Standard-Welt, Seed-Welt), Seed-Übernahme (level.dat, NBT-Long), Operator bei Cheats, Doppel-Erstell-Laufsperre, worldMissing, Auswahl+Start, Backup-/Failover-Integrität, Weltwechsel unter laufendem Server; Regression behoben: laufender Server einer anderen Welt wurde bei `startServer()` als "ok" verkauft, jetzt klarer Abbruch |
 
 Automatisierte Abdeckung: siehe [TESTPLAN.md](TESTPLAN.md).
 
@@ -27,6 +28,7 @@ Automatisierte Abdeckung: siehe [TESTPLAN.md](TESTPLAN.md).
 |---|---|---|---|
 | 2026-10-21 | `d683c62` | ✅ bestanden | siehe unten |
 | 2026-10-24 | vor Commit | ✅ bestanden | Wiederholung nach dem Hub-Token-Fix |
+| 2026-10-24 | vor Commit | ✅ bestanden | Wiederholung nach Einführung der direkten Welt-Erstellung (unverändert, inkl. Start mit bestätigter Bereitschaft) |
 
 Ausführlich (`npm run smoke:minecraft`):
 
@@ -49,6 +51,7 @@ Ausführlich (`npm run smoke:minecraft`):
 |---|---|---|---|
 | 2026-10-24 | dies vor Commit | ✅ bestanden | „ERGEBNIS: Failover erfolgreich - PC-B hostet den Server" |
 | 2026-10-24 | vor Commit | ✅ bestanden | Wiederholung nach dem Hub-Token-Fix |
+| 2026-10-24 | vor Commit | ✅ bestanden | Wiederholung nach Einführung der direkten Welt-Erstellung: Lease Epoche 1 → Backup repliziert (PC-B, 3875 Bytes) → PC-A hart beendet → Lease-Übernahme Epoche 2 → Welt aus repliziertem Backup → PC-B `running` |
 
 Ausführlich (`npm run smoke:failover`, Beobachtungen aus dem Log des Laufs):
 

@@ -40,6 +40,7 @@ Erwartung: **alle Tests grün**, keine Warnungen im Typecheck.
 | `tests/integration-backup-replication.test.ts` | **Echtes libp2p-Netz**: Backup-Replikation, Deadlock-Regression |
 | `tests/app-service.test.ts` | **Rauchtest**: Welt importieren, Backup, Restore, Ein-Klick-Prüfungen |
 | `tests/embedded-hub.test.ts` | **Eingebauter Hub**: Gruppenerstellung ohne Token-Eingabe, Fail-closed bei falschem Token, externer Hub mit/ohne Token, stabile Peer-ID/Port über Neustarts, Sitzungs-Wiederherstellung |
+| `tests/world-create.test.ts` | **Welt-Erstellung in der App**: ungültige Namen/Versionen/Modi abweisen, belegter Port, Namenskollision unverändert lassen, worldMissing-Ablauf, zwei echte Paper-Generierungen (Defaults + Seed, inkl. Seed-Übernahme als NBT-Long in level.dat und Operator-Eintrag bei Cheats), parallele Doppel-Erstellung verhindern, Start mit bestätigter Bereitschaft, bestehende Welt auswählen und starten, Gruppen-/Backup-/Failover-Integrität, klarer Abbruch beim Weltwechsel unter laufendem Server |
 
 ---
 

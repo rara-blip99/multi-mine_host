@@ -71,6 +71,11 @@ was noch offen ist.
 | DataVersion aus `level.dat` lesen (eigener NBT-Leser) | ✅ | `minecraft-versions.test.ts` (echte Welt-Fixture) |
 | Kompatibilitätsprüfung (Downgrade verhindern) | ✅ | `minecraft-versions.test.ts`, `app-service.test.ts` |
 | Import einer bestehenden Welt | ✅ | `app-service.test.ts` (echte Welt-Fixture) |
+| Direkte Welt-Erstellung in der App (echter Paper-Generierungslauf) | ✅ | `world-create.test.ts` — zwei echte Generierungen (Standard-Welt + Seed-Welt), danach Start über den üblichen Pfad |
+| Welt-Erstellungs-Eingangsprüfung (Name, Seed, Port, Speicherplatz) vor jedem Download | ✅ | `world-create.test.ts` (ungültige Namen/Versionen/Modi, echter belegter Port, Namenskollision) |
+| Seed-Übernahme in die Welt (`level.dat` als NBT-Long) | ✅ | `world-create.test.ts` — Seed `123456789` als Long aus `level.dat` gelesen |
+| Operator-Eintrag bei Cheats (`ops.json`) | ✅ | `world-create.test.ts` |
+| Weltwechsel unter laufendem Server: klarer Abbruch statt falscher „Start" | ✅ | `world-create.test.ts` (Regressionstest) |
 | Guided Import mit Kompatibilitätshinweis | 🟡 | – |
 | Bedrock Edition | ⬜ | – |
 | Plugin-Verwaltung | ⬜ | – |
@@ -89,6 +94,9 @@ was noch offen ist.
 | Temporäre Dateien statt direkter Ziel-Schreibzugriffe | ✅ | `world-sync.test.ts` |
 | Prüfung des freien Speicherplatzes | ✅ | `world-sync.test.ts` |
 | Fortschritt und Geschwindigkeit in der Oberfläche | 🟡 | – |
+| Auswahl einer vorhandenen Welt als aktive Welt (Existenz, Integrität, Kompatibilität vor der Auswahl geprüft) | ✅ | `world-create.test.ts` |
+| Start ohne eingerichtete Welt verweist auf „Neue Welt erstellen / Vorhandene Welt auswählen" | ✅ | `world-create.test.ts` (worldMissing) |
+| Parallele Doppel-Erstellung verhindert (Laufsperre) | ✅ | `world-create.test.ts` (zweiter Aufruf wird abgewiesen) |
 | Verschlüsselte Übertragung | ✅ (Noise auf Transportebene) | `integration-network.test.ts` |
 
 ## 6. Backups
@@ -113,8 +121,9 @@ was noch offen ist.
 | Bereich | Status |
 |---|---|
 | Dashboard (Host, Server, Mitglieder, Welt, Backup, Sync, nächster Host) | ✅ |
+| Dashboard: Auswahl-Dialog ohne Welt („Neue Welt erstellen / Vorhandene Welt auswählen“) und Erstell-Fortschritt | ✅ |
 | Gruppenverwaltung (erstellen, beitreten, Einladungen, Mitglieder) | ✅ |
-| Weltverwaltung (Import, Integrität, Backups, Wiederherstellung) | ✅ |
+| Weltverwaltung (Import, Neuwelt-Dialog, Auswahl einer gespeicherten Welt, Integrität, Backups, Wiederherstellung) | ✅ |
 | Einstellungen (Edition, Version, RAM, Backup, Netzwerk, Verhalten) | ✅ |
 | Anzeige der Host-Bewertung mit Begründungen | ✅ |
 | Anzeige von Fehlern und Einschränkungen | ✅ |
@@ -159,7 +168,7 @@ folgende Schritte über genau einen Codepfad (`AppService.startWorld()`):
 | Gruppe eingerichtet? | ✓ verpflichtend | Verständliche Fehlermeldung, wenn nicht |
 | Verbindet zum Koordinationsdienst (Hub) | ✓ | Automatische Neuverbindung alle 15 s im Hintergrund |
 | Host-Lease erwerben | ✓ | über den echten Übernahme-Pfad (Failover-Mechanik) |
-| Welt bereitstellen | ✓ | lokal, vom Host, aus Backup, oder neue Welt; Fehlschlag = kein Start |
+| Welt bereitstellen | ✓ | lokal, vom Host, aus Backup; ohne Welt: klare Rückmeldung an die Oberfläche (Wahl-Dialog „Neue Welt erstellen / Vorhandene Welt auswählen") |
 | Minecraft-Server starten | ✓ | Bereitschaftscheck („Done (…)!") |
 | Eingebauter Koordinationsdienst | ✓ standardmäßig aktiv | Zufallsport, keine Portkonflikte, Stable Peer-ID |
 | Koordinationsstatus sichtbar | ✓ | Kachel „Koordination: verbunden/getrennt" |
@@ -181,6 +190,35 @@ Zusätzlich realisiert (Stand 2026-10-24):
 | Hub-Neustart baut Sitzungen + Public Keys wieder auf | ✓ Nach Neustart gelten gespeicherte Sitzungstokens weiter und die Signaturprüfung funktioniert (Regressionstest in `tests/hub-service.test.ts`) |
 | Hub-Verbindungsfehler blockieren den Start nicht | ✓ Beim Start missglückte Verbindungen werden im Hintergrund (alle 15 s) wiederaufgenommen |
 
+## 9c. Direkte Welt-Erstellung in der Anwendung (Stand 2026-10-24)
+
+Ohne existierende Welt führt „▶ Welt starten" jetzt den Nutzer durch die
+Auswahl (Modal „Keine Welt vorhanden"): **Neue Welt erstellen**,
+**Vorhandene Welt auswählen** oder Abbrechen. Der Erstelle-Dialog fragt
+Name, Minecraft-Version, Spielmodus, Schwierigkeit, optionalen Seed und
+Cheats ab. Die Umsetzung läuft über genau einen Codepfad
+(`AppService.createWorld()`):
+
+| Schritt | Verhalten |
+|---|---|
+| Eingangsprüfung | Gruppen/Hub aktiv, Weltname (Pfad-Traversal-, Windows-reserviert, erlaubte Zeichen), Ziel-Kollision, unterstützte Version, Spielmodus/Schwierigkeit Whitelist, Seed-Format, Port-Freiheit (echter Socket-Probe), freier Speicherplatz (≥ 1 GiB) |
+| Generierung | Echter Paper-Server im temporären Bootstrap-Verzeichnis (`allowFreshWorld`), `server.properties` mit den gewählten Einstellungen (`level-seed` inkl.), Bereitschaft „Done (…s)!" |
+| Übernahme | Kontrolliertes Stoppen (`save-off → save-all flush`), Integritätsprüfung des Ergebnisses, Verschieben in den Weltspeicher (Kollisionen unmöglich, Bootstrap-Rest aufräumen) |
+| Produktion | Serververzeichnis mit derselben Konfiguration, bei Cheats Ersteller in `ops.json` ergänzt, Session + Journaleintrag, Start über den üblichen Ein-Klick-Pfad (Lease → Hub-Registrierung → echte Bereitschaft) |
+
+Die Wahl einer bereits vorhandenen Welt aus dem Weltspeicher geht ebenso über
+den Dialog; sie wird vor der Auswahl auf Integrität und Versionskompatibilität
+geprüft. Der Start des Servers bleibt im bewährten Pfad.
+
+Gewährleistet per Regressionstest: `tests/world-create.test.ts` (11 Fälle, zwei
+echte Paper-Generierungen, echte Serverstarts, Seed 123456789n als NBT-Long
+in `level.dat`, Schwierigkeitsgrad als Byte 3 „hard", Operator-Eintrag bei
+Cheats, Doppel-Erstellungs-Laufsperre, Backup- und Failover-Zustand intakt,
+klarer Abbruch beim Weltwechsel unter laufendem Server). Beim Weltwechsel
+unterm laufenden Server verkauft `startServer()` keinen fremden Weltstand
+mehr als „Start ok" - Regression durch den Welt-Erstellungstest aufgedeckt
+und behoben.
+
 ## 9a. Manuell verifiziert (nicht automatisiert)
 
 Der Rauchtest `npm run smoke:minecraft` wurde vollständig ausgeführt und
@@ -198,6 +236,10 @@ erfolgreich durchlaufen:
 | Weltintegrität nach dem Stopp | OK |
 
 Der Test ist reproduzierbar: `npm run smoke:minecraft`.
+
+Zuletzt wiederholt am 2026-10-24 nach Einführung der direkten Welt-Erstellung:
+erneut vollständig bestanden (identische Schritte, Paper 1.20.4-499,
+„Done!“-Bereitschaft, Server-List-Ping 0/20, Backup, Stopp, Integrität OK).
 
 ## 10. Bekannte Fehler und Lücken
 
