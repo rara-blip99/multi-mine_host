@@ -35,6 +35,12 @@ export interface HubNodeOptions extends HubOptions {
   listen: string[]
   /** Datei fuer die persistente Zustandssicherung. */
   dataFile?: string
+  /**
+   * PKCS#8-PEM eines Ed25519-Schluessels - wenn gesetzt, ist die Peer-ID
+   * des Hubs ueber Neustarts stabil (z. B. fuer den eingebauten Hub, dessen
+   * Adresse in Einladungslinks und Sitzungen vermerkt wird).
+   */
+  privateKeyPem?: string
 }
 
 export class HubNode {
@@ -59,6 +65,7 @@ export class HubNode {
     this.peer = await createPeerNode({
       listen: this.opts.listen,
       isHub: true,
+      privateKeyPem: this.opts.privateKeyPem,
       appName: 'multi-mine-hub/0.1.0'
     })
     await this.peer.handle(PROTOCOLS.hub, (stream) => this.handleStream(stream))

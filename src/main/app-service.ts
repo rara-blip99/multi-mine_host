@@ -18,13 +18,14 @@ import type {
   WorldRegistryEntry
 } from '@shared/types'
 import type { InviteInfo, PeerDiscoveryInfo } from '@shared/protocol'
+import { peerIdFromAddress } from '@shared/protocol'
 import { AtomicStore, Journal } from './core/atomic-store'
 import { Paths, localIPv4Addresses } from './core/paths'
 import { appVersion } from './core/app-info'
 import { logger } from './core/logger'
-import { identityStore } from './security/identity'
+import { generateEd25519Pem, identityStore } from './security/identity'
 import type { IdentityStore } from './security/identity'
-import { keystore } from './security/keystore'
+import { Keystore } from './security/keystore'
 import { createPeerNode } from './net/transport'
 import type { PeerNode } from './net/transport'
 import { PeerManager } from './net/peer-manager'
@@ -81,6 +82,14 @@ export class AppService {
   private peers: PeerManager | null = null
   private lease: LeaseClient | null = null
   private embeddedHub: HubNode | null = null
+  /**
+   * Token des eingebauten Hubs. Wird beim Hub-Start einmalig aufgeloest
+   * (Keystore; Migrationspfad: frueher gesetzte Einstellung gewinnt) und
+   * anschliessend konsequent verwendet - nie geloggt, nie an fremde
+   * Hubs gesendet.
+   */
+  private embeddedHubToken: string | null = null
+  private readonly keystore: Keystore
   private server: MinecraftServerManager | null = null
   private backups: BackupManager
   private perf: PerformanceMonitor
@@ -98,6 +107,10 @@ export class AppService {
 
   constructor(private readonly opts: AppServiceOptions = {}) {
     if (opts.dataRoot) Paths.setRoot(opts.dataRoot)
+    // Eigene Keystore-Instanz: das Modul-Singleton wuerde die Verzeichnisse
+    // bereits beim ersten Import einfrieren - vor setRoot von Tests bzw.
+    // portablen Installationen.
+    this.keystore = new Keystore()
     const stateDir = opts.stateDir ?? Paths.state()
     mkdirSync(stateDir, { recursive: true })
     this.settingsStore = new AtomicStore<AppSettings>(join(stateDir, 'settings.json'), defaultSettings)
@@ -171,11 +184,9 @@ export class AppService {
       server: { ...defaultServerStatus(), mcVersion: settings.mcVersion, ramLimitBytes: settings.serverRamBytes }
     })
 
-    // Eingebetteten Hub starten (falls aktiv; Port 0 = Zufallsport)
-    if (settings.embeddedHubEnabled) {
-      await this.startEmbeddedHub(settings.embeddedHubPort)
-    }
-    // Falls die Migration tatbestaendlich war: einmalig persistieren.
+    // Falls die Migration tatbestaendlich war: einmalig persistieren -
+    // vor dem Hub-Start, damit der dort persistierte Hub-Port nicht
+    // durch die migrierten Defaults wieder ueberschrieben wird.
     if (this.migratedFromDefaults) {
       this.migratedFromDefaults = false
       try {
@@ -186,9 +197,24 @@ export class AppService {
       }
     }
 
+    // Eingebetteten Hub starten (falls aktiv; Port 0 = Zufallsport)
+    if (settings.embeddedHubEnabled) {
+      await this.startEmbeddedHub()
+    }
+
     const session = this.session
     if (session.groupId && session.hubAddress) {
-      await this.connectHub(session.hubAddress, session.groupId, session.sessionToken)
+      // Ein fehlgeschlagener Hub-Kontakt darf die Initialisierung nicht
+      // abbrechen (z. B. alter Port nach Wechsel des Hubs). Die
+      // Wiederverbindung uebernimmt scheduleReconnect.
+      try {
+        await this.connectHub(session.hubAddress, session.groupId, session.sessionToken)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        logger.warn('app', 'Hub-Verbindung beim Start fehlgeschlagen', { error: message })
+        this.patch({ hubConnected: false, hubError: message })
+        this.scheduleReconnect()
+      }
     }
 
     this.startHeartbeat()
@@ -232,17 +258,74 @@ export class AppService {
     return merged
   }
 
-  private async startEmbeddedHub(port: number): Promise<void> {
+  private async startEmbeddedHub(): Promise<void> {
     try {
-      const token = this.state.settings.embeddedHubToken || keystore.ensureToken('embedded-hub-token')
-      const hub = new HubNode({
-        listen: [`/ip4/0.0.0.0/tcp/${port}`],
-        token,
-        dataFile: join(Paths.state(), 'hub-state.json')
-      })
-      await hub.start()
+      const settings = this.state.settings
+      // Genau eine Token-Quelle. Rueckwaertskompatible Migration: falls in
+      // der Einstellungsdatei noch ein Token liegt (aeltere Versionen),
+      // gewinnt es einmalig und wird in den Keystore uebernommen - danach
+      // liefert der Keystore dasselbe Token fuer jeden weiteren Start.
+      const legacy = (settings.embeddedHubToken ?? '').trim()
+      const token = legacy || this.keystore.ensureToken('embedded-hub-token')
+      this.embeddedHubToken = token
+      if (legacy) this.keystore.set('embedded-hub-token', token)
+
+      // Eigenes Verzeichnis fuer die Hub-Datei.
+      const hubDataFile = join(Paths.state(), 'hub-state.json')
+
+      // Persistenter Ed25519-Schluessel: ohne ihn waere die Peer-ID des
+      // Hubs bei jedem Start neu und gespeicherte Gruppen-/Sitzungs-
+      // adressen waeren wertlos.
+      let pem = this.keystore.get('embedded-hub-identity-pem')
+      if (!pem) {
+        pem = generateEd25519Pem()
+        this.keystore.set('embedded-hub-identity-pem', pem)
+      }
+
+      // Port-Strategie: fester Port (Einstellung) oder der beim letzten
+      // Start konkret gebundene Port. Ist der belegt (EADDRINUSE),
+      // faellt der Start auf einen freien Port zurueck und persistiert
+      // diesen - so wiederholt sich die Auswahl naechstes Mal korrekt.
+      const wanted = settings.embeddedHubPort > 0 ? settings.embeddedHubPort : settings.embeddedHubLastPort
+      const attempts = wanted > 0 ? [wanted, 0] : [0]
+
+      let hub: HubNode | null = null
+      let lastError: unknown = null
+      for (const port of attempts) {
+        const candidate = new HubNode({
+          listen: [`/ip4/0.0.0.0/tcp/${port}`],
+          token,
+          dataFile: hubDataFile,
+          privateKeyPem: pem
+        })
+        try {
+          await candidate.start()
+          hub = candidate
+          break
+        } catch (err) {
+          lastError = err
+          try {
+            await candidate.stop()
+          } catch {
+            /* Nicht erfolgreich gestartet - nichts weiter zu raeumen. */
+          }
+          const busy = /EADDRINUSE|port (?:is )?(?:already )?in use/i.test(String(err))
+          if (busy) {
+            logger.warn('app', 'Eingebetteter Hub: Port belegt, es wird ein anderer Port benutzt', { port })
+            continue
+          }
+          throw err
+        }
+      }
+      if (!hub) throw lastError ?? new Error('Eingebetteter Hub konnte nicht gestartet werden')
+
       this.embeddedHub = hub
-      logger.info('app', 'Eingebetteter Hub gestartet', { port, peerId: hub.peerId })
+      const address = this.embeddedHubAddress()
+      const bound = Number(/\/tcp\/(\d+)\//.exec(address ?? '')?.[1] ?? 0)
+      if (bound > 0 && bound !== settings.embeddedHubLastPort) {
+        await this.updateSettings({ embeddedHubLastPort: bound })
+      }
+      logger.info('app', 'Eingebetteter Hub gestartet', { port: bound > 0 ? bound : 'auto', peerId: hub.peerId })
     } catch (err) {
       logger.error('app', 'Eingebetteter Hub konnte nicht gestartet werden', { error: String(err) })
     }
@@ -255,6 +338,39 @@ export class AppService {
     if (!usable) return null
     const peerId = this.embeddedHub.peerId
     return usable.includes('/p2p/') ? usable : `${usable}/p2p/${peerId}`
+  }
+
+  /** Peer-ID des eingebetteten Hubs (oder null, wenn er nicht laeuft). */
+  embeddedHubPeerId(): string | null {
+    return this.embeddedHub?.peerId ?? null
+  }
+
+  /**
+   * Prueft, ob die angegebene Multiaddr auf den eigenen eingebauten Hub
+   * zielt. Gemessen wird ueber die Peer-ID (eine oeffentliche Kennung,
+   * kein Geheimnis) - der Rest der Adresse (IP/Port) darf vom letzten
+   * Start abweichen.
+   */
+  private isEmbeddedHubAddress(address: string): boolean {
+    const hub = this.embeddedHub
+    if (!hub) return false
+    return peerIdFromAddress(address) === hub.peerId
+  }
+
+  /**
+   * Reguliert Hub-Adressen auf die aktuell laufende Instanz des
+   * eingebauten Hubs, wenn die Peer-ID passt (z. B. alter Port nach
+   * Neustart in Einladungslinks oder gespeicherten Sitzungen). Andere
+   * Adressen werden unverändert (nur getrimmt) durchgereicht.
+   */
+  private canonicalHubAddress(address: string): string {
+    const trimmed = (address ?? '').trim()
+    if (!trimmed) return ''
+    if (this.isEmbeddedHubAddress(trimmed)) {
+      const current = this.embeddedHubAddress()
+      if (current) return current
+    }
+    return trimmed
   }
 
   private async ensureNode(): Promise<PeerNode> {
@@ -284,10 +400,13 @@ export class AppService {
     groupId?: string,
     sessionToken?: string
   ): Promise<void> {
+    // Adressen, die auf den eigenen eingebauten Hub zielen (alte Ports
+    // nach Neustart), werden auf die laufende Adresse reguliert.
+    const target = this.canonicalHubAddress(hubAddress)
     const node = await this.ensureNode()
     const hub = new HubClient({
       identity: this.identity,
-      hubAddress,
+      hubAddress: target,
       peer: node,
       sessionToken,
       groupId,
@@ -297,6 +416,11 @@ export class AppService {
     await hub.connect()
     this.hub = hub
     this.patch({ hubConnected: true, hubError: null })
+    // Auch die gespeicherte Sitzung auf die laufende Adresse nachziehen,
+    // damit der naechste Verbindungsversuch die korrekte Adresse nutzt.
+    if (target !== hubAddress.trim()) {
+      await this.saveSession({ hubAddress: target })
+    }
     // Netzwerkqualitaet zum Hub messen (fliesst in die Host-Bewertung ein)
     void this.measureNetwork()
   }
@@ -309,7 +433,8 @@ export class AppService {
   ): Promise<{ group: GroupInfo; invites: InviteInfo[] }> {
     // Ohne ausdrueckliche Adresse wird der eingebaute Hub genutzt - so
     // funktioniert "Gruppe erstellen" mit einem Klick.
-    const address = hubAddress || this.embeddedHubAddress() || this.state.settings.hubAddress
+    const requested = (hubAddress ?? '').trim() || this.embeddedHubAddress() || this.state.settings.hubAddress || ''
+    const address = this.canonicalHubAddress(requested)
     if (!address) {
       throw new Error(
         'Keine Hub-Adresse verfuegbar. Aktiviere den eingebauten Hub oder gib die Adresse eines externen Hubs an.'
@@ -318,6 +443,18 @@ export class AppService {
     await this.connectHub(address)
     const hub = this.hub
     if (!hub) throw new Error('Keine Verbindung zum Hub')
+
+    // Genau eine Token-Quelle:
+    //  1. Eingabe des Benutzers gewinnt immer (auch am eigenen Hub - ein
+    //     falsches Token schlaegt bewusst fehl statt still umgelenkt zu
+    //     werden, fail-closed).
+    //  2. Am eigenen eingebauten Hub ( gleiche Peer-ID ) wird das Token
+    //     dieses Hubs automatisch verwendet, damit "Gruppe erstellen"
+    //     ohne manuelle Token-Eingabe funktioniert.
+    //  3. An fremden Hubs wird nie das Token des eigenen Hubs gesendet.
+    const userToken = hubToken?.trim()
+    const token =
+      userToken || (this.isEmbeddedHubAddress(address) ? this.embeddedHubToken || undefined : undefined)
 
     const capability = await this.currentCapability()
     const result = await hub.call<{ kind: 'group'; snapshot: GroupSnapshot; sessionToken: string }>(
@@ -329,7 +466,7 @@ export class AppService {
         publicKey: this.identity.publicKeyBase64,
         peerId: hub.peerId,
         hubAddress: address,
-        ...(hubToken ? { hubToken } : {})
+        ...(token ? { hubToken: token } : {})
       }
     )
 
@@ -357,7 +494,13 @@ export class AppService {
     groupId: string,
     inviteCode: string
   ): Promise<GroupInfo> {
-    await this.connectHub(hubAddress)
+    // Alte Adressen des eigenen eingebauten Hubs (z. B. aus Einladungslink)
+    // auf die laufende Adresse regulieren; Beitritt benoetigt kein Hub-Token.
+    const address = this.canonicalHubAddress(hubAddress)
+    if (!address) {
+      throw new Error('Keine Hub-Adresse angegeben.')
+    }
+    await this.connectHub(address)
     const hub = this.hub
     if (!hub) throw new Error('Keine Verbindung zum Hub')
 
@@ -376,9 +519,9 @@ export class AppService {
 
     const snapshot = result.snapshot
     hub.setSession(result.sessionToken, groupId)
-    await this.saveSession({ groupId, hubAddress, sessionToken: result.sessionToken })
+    await this.saveSession({ groupId, hubAddress: address, sessionToken: result.sessionToken })
     await this.afterSnapshot(snapshot)
-    await this.updateSettings({ hubAddress })
+    await this.updateSettings({ hubAddress: address })
     return snapshot.group
   }
 

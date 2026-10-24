@@ -426,6 +426,13 @@ export interface AppSettings {
    * wenn embeddedHubEnabled false ist.
    */
   embeddedHubPort: number
+  /**
+   * Port, den der eingebaute Hub beim letzten Start konkret gebunden hat
+   * (automatisch vermerkt). Mit 0 wird er erneut vom Betriebssystem
+   * vergeben. So bleibt die Adresse des eingebauten Hubs über Neustarts
+   * gleich, ohne dass der Benutzer einen Port festlegen muss.
+   */
+  embeddedHubLastPort: number
   /** Verhalten beim Schliessen der App. */
   closeBehavior: 'keep-running' | 'stop-server' | 'quit'
   autostart: boolean

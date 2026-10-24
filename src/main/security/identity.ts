@@ -222,3 +222,15 @@ export function ed25519SeedFromPem(pem: string): Buffer {
   if (der.length < 32) throw new Error('PKCS#8-Daten zu kurz fuer einen Ed25519-Seed')
   return der.subarray(der.length - 32)
 }
+
+/**
+ * Erzeugt einen neuen Ed25519-Schluessel als PKCS#8-PEM.
+ *
+ * Wird fuer die Identitaet des eingebauten Hubs genutzt: Der Hub braucht
+ * eine eigene, ueber Anwendungsneustarts bestehende Peer-ID (die nicht mit
+ * der Peer-ID der Anwendung zusammenfallen darf).
+ */
+export function generateEd25519Pem(): string {
+  const { privateKey } = generateKeyPairSync('ed25519')
+  return privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
+}

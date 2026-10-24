@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useApp, formatRelative } from '../state'
 import { Card, CopyField, Empty, Field, Modal, Notice, Pill } from '../components/ui'
-import { encodeInviteLink, parseInviteLink } from '@shared/protocol'
+import { encodeInviteLink, parseInviteLink, peerIdFromAddress } from '@shared/protocol'
 import type { InviteInfo } from '@shared/protocol'
 
 /**
@@ -21,6 +21,15 @@ export default function GroupPage(): React.JSX.Element {
 
   const isOwner = state.members.find((m) => m.nodeId === state.identity?.nodeId)?.role === 'owner'
   const isAdmin = isOwner || state.members.find((m) => m.nodeId === state.identity?.nodeId)?.role === 'admin'
+
+  // Hinweis, wenn im Create-Dialog eine Adresse eingegeben wurde, die
+  // nach Peer-ID nicht zum eingebauten Hub gehoert (fremder Hub). Peer-IDs
+  // sind oeffentliche Kennungen - der Vergleich ersetzt keine Pruefung.
+  const embeddedPeerId = embedded ? peerIdFromAddress(embedded) : null
+  const typedAddress = mode === 'create' ? hubAddress.trim() : ''
+  const typedPeerId = typedAddress ? peerIdFromAddress(typedAddress) : null
+  const targetsForeignHub =
+    mode === 'create' && typedPeerId !== null && embeddedPeerId !== null && typedPeerId !== embeddedPeerId
 
   useEffect(() => {
     if (state.group) {
@@ -342,6 +351,14 @@ export default function GroupPage(): React.JSX.Element {
               }}
             />
           </Field>
+
+          {targetsForeignHub && (
+            <Notice kind="warn">
+              Diese Adresse geh&ouml;rt zu einem anderen Hub als dem eingebauten. Das Token des eingebauten
+              Hubs wird hier nicht automatisch gesendet - geben Sie unten das Token dieses Hubs ein,
+              falls er eines verlangt.
+            </Notice>
+          )}
 
           {mode !== 'create' && (
             <Field label="Einladungslink oder Einladungscode + Gruppen-ID">

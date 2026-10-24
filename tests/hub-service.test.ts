@@ -408,4 +408,48 @@ describe('Hub-Koordination', () => {
     })
     expect(hub.getPublicKey('owner')).toBe('key-owner')
   })
+
+  it('stellt Sitzungen und öffentliche Schlüssel nach Hub-Neustart wieder her', () => {
+    const original = new HubService()
+    const created = original.createGroup('owner', 'key-owner', {
+      groupId: GROUP_ID,
+      name: 'Freunde',
+      displayName: 'Owner'
+    })
+    const code = original.listInvites('owner', GROUP_ID)[0]?.code as string
+    const joined = original.joinGroup(
+      'node-b',
+      'key-b',
+      { groupId: GROUP_ID, inviteCode: code, displayName: 'B', capability: capability('node-b') },
+      Date.now()
+    )
+
+    // Simulierter Neustart: neuer HubService liest den serialisierten
+    // Zustand. Ohne Wiederherstellung der Sitzungen und oeffentlichen
+    // Schluessel ware nach jedem Hub-Neustart die gespeicherte Session
+    // jeder Anwendung wertlos und die Signaturpruefung aller Anfragen
+    // wuerde scheitern.
+    const revived = new HubService()
+    revived.restore(original.serialize())
+
+    // Die persistierten Sitzungstokens gelten weiter.
+    expect(revived.authenticate('owner', created.sessionToken, GROUP_ID)).toBeDefined()
+    expect(revived.authenticate('node-b', joined.sessionToken, GROUP_ID)).toBeDefined()
+
+    // Die oeffentlichen Schluessel sind fuer die Signaturpruefung da.
+    expect(revived.getPublicKey('owner')).toBe('key-owner')
+    expect(revived.getPublicKey('node-b')).toBe('key-b')
+
+    // Kein Fallback: ein falsches Token bleibt ein Fehler.
+    expect(() => revived.authenticate('owner', 'uetterlich-falsch', GROUP_ID)).toThrow(
+      /Ungültiges Sitzungstoken/
+    )
+    expect(() => revived.authenticate('node-b', undefined, GROUP_ID)).toThrow(/Fehlendes Sitzungstoken/)
+
+    // Der Gruppe bleibt ueber den Neustart erhalten.
+    expect(revived.getGroup(GROUP_ID)?.group.name).toBe('Freunde')
+    // Heartbeat mit wiederhergestellter Sitzung liefert einen Snapshot.
+    const beat = revived.heartbeat('node-b', GROUP_ID, capability('node-b'), [], Date.now())
+    expect(beat.group.groupId).toBe(GROUP_ID)
+  })
 })

@@ -21,6 +21,7 @@ export function defaultSettings(): AppSettings {
     hubAddress: '',
     embeddedHubEnabled: true,
     embeddedHubPort: 0,
+    embeddedHubLastPort: 0,
     closeBehavior: 'keep-running',
     autostart: false,
     minimizeToTray: true,

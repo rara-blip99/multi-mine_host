@@ -459,3 +459,16 @@ export function parseInviteLink(text: string): InviteBundle | null {
     return null
   }
 }
+
+/**
+ * Extrahiert die Peer-ID aus einer Multiaddr mit `/p2p/<id>`-Komponente.
+ *
+ * Wird benoetigt, um festzustellen, ob eine angegebene Adresse zu einem
+ * bestimmten Hub gehoert (Peer-IDs sind oeffentliche Kenner, keine
+ * Geheimnisse). Gibt null zurueck, wenn die Adresse keine Peer-ID traegt.
+ */
+export function peerIdFromAddress(address: string): string | null {
+  const matches = [...address.matchAll(/\/p2p\/([^/]+)/g)]
+  const last = matches[matches.length - 1]
+  return last?.[1] ?? null
+}

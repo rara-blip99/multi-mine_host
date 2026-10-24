@@ -611,6 +611,9 @@ export class HubService {
         leases: Record<string, unknown>
       }
       this.groups.clear()
+      this.sessions.clear()
+      this.publicKeys.clear()
+      const now = Date.now()
       for (const g of data.groups ?? []) {
         const record: HubGroupRecord = {
           group: g.group,
@@ -619,6 +622,22 @@ export class HubService {
           peerIds: new Map(g.peerIds)
         }
         this.groups.set(record.group.groupId, record)
+        // Sitzungstokens und oeffentliche Schluessel der Mitglieder
+        // wiederherstellen. Ohne publicKeys wuerde die Signaturpruefung
+        // aller Anfragen scheitern; ohne Sitzungen waere das gespeicherte
+        // Token jeder Anwendung nach einem Hub-Neustart wertlos (beides
+        // ist im Hub-Zustand bereits vorhanden, hier wird es kein
+        // neues Geheimnis erzeugt).
+        for (const member of record.members.values()) {
+          if (member.publicKey) this.publicKeys.set(member.nodeId, member.publicKey)
+          if (member.sessionToken && !member.revoked) {
+            this.sessions.set(member.nodeId, {
+              token: member.sessionToken,
+              expiresAt: now + this.sessionTtlMs,
+              groupId: record.group.groupId
+            })
+          }
+        }
       }
       if (data.leases) {
         this.authority.restore(data.leases as never)
